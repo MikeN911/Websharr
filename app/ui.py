@@ -29,6 +29,8 @@ from .downloads import DownloadManager, Job
 from .settings import SESSION_TTL, THEMES, hash_password, settings, verify_password
 from .torznab import (
     VIDEO_EXTENSIONS,
+    _is_allowed_file,
+    _matches_anywhere,
     build_queries,
     expand_titles,
     file_marker,
@@ -428,6 +430,7 @@ def _result_json(request: Request, r: SearchResult, release: str) -> dict:
         "size": r.size,
         "positive_votes": r.positive_votes,
         "nzb_url": nzb_url,
+        "webshare_url": f"https://webshare.cz/#/file/{r.ident}/",
     }
 
 
@@ -439,18 +442,51 @@ async def ui_search(request: Request):
 
     params = request.query_params
     t = params.get("t", "search")
-    if t not in ("search", "tvsearch", "movie"):
+    if t not in ("search", "tvsearch", "movie", "music", "book", "games"):
         return JSONResponse({"error": f"Unknown search type '{t}'"}, status_code=400)
 
-    t, q, season, ep = parse_query(t, params.get("q", ""), params.get("season"), params.get("ep"))
-    titles, display, _language, _czech, year = await expand_titles(
-        t, q, params.get("cat"), tvdbid=params.get("tvdbid"),
-        imdbid=params.get("imdbid"), tmdbid=params.get("tmdbid"))
-    queries = []
-    for title in titles:
-        for v in build_queries(t, title, season, ep):
-            if v not in queries:
-                queries.append(v)
+    if t == "tvsearch":
+        ws_category = "video"
+    elif t == "movie":
+        ws_category = "video"
+    elif t in ("music", "audio"):
+        ws_category = "audio"
+    elif t in ("book", "books", "docs"):
+        ws_category = "docs"
+    elif t in ("games", "archives"):
+        ws_category = "archives"
+    else:  # "search"
+        cat_param = (params.get("cat", "") or "").strip()
+        cat_list = [c.strip() for c in cat_param.split(",") if c.strip()]
+        if any(c.startswith("3") for c in cat_list):
+            ws_category = "audio"
+        elif any(c.startswith("7") or c.startswith("8") for c in cat_list):
+            ws_category = "docs"
+        elif any(c.startswith("4") for c in cat_list):
+            ws_category = "archives"
+        elif any(c.startswith("5") or c.startswith("2") for c in cat_list):
+            ws_category = "video"
+        else:
+            ws_category = "all"
+
+    if ws_category == "video":
+        t, q, season, ep = parse_query(t, params.get("q", ""), params.get("season"), params.get("ep"))
+        titles, display, _language, _czech, year = await expand_titles(
+            t, q, params.get("cat"), tvdbid=params.get("tvdbid"),
+            imdbid=params.get("imdbid"), tmdbid=params.get("tmdbid"))
+        queries = []
+        for title in titles:
+            for v in build_queries(t, title, season, ep):
+                if v not in queries:
+                    queries.append(v)
+    else:
+        q = (params.get("q", "") or "").strip()
+        season, ep = None, None
+        titles = [q] if q else []
+        display = q
+        year = 0
+        queries = [q] if q else []
+
     if not queries:
         return {"results": [], "queries": []}
 
@@ -463,23 +499,27 @@ async def ui_search(request: Request):
     merged: list[SearchResult] = []
     for query in queries:
         try:
-            results = await client.search(query, limit=limit)
+            results = await client.search(query, category="", limit=limit)
         except (WebshareError, httpx.HTTPError) as exc:
             logger.error("UI search '%s' failed: %s", query, exc)
             return JSONResponse({"error": f"Webshare search failed: {exc}"}, status_code=502)
         for r in results:
-            if r.ident in seen or r.password or not _is_video(r.name):
+            if r.ident in seen or r.password or not _is_allowed_file(r.name, ws_category):
                 continue
-            if not matches_query(titles, r.name):
-                continue  # drop Webshare's loose non-matching fulltext hits
-            if year_conflict(r.name, year):
-                continue  # same-named other title (DuckTales 1987 vs 2017)
-            if want_ep is not None or want_season is not None:
-                fs, fe = file_marker(titles, r.name)
-                if want_ep is not None and fe != want_ep:
-                    continue  # OR fulltext returns every episode; keep the asked one
-                if want_season is not None and fs is not None and fs != want_season:
-                    continue  # an S02E02 file is not the requested S01E02
+            if ws_category == "video":
+                if not matches_query(titles, r.name):
+                    continue  # drop Webshare's loose non-matching fulltext hits
+                if year_conflict(r.name, year):
+                    continue  # same-named other title (DuckTales 1987 vs 2017)
+                if want_ep is not None or want_season is not None:
+                    fs, fe = file_marker(titles, r.name)
+                    if want_ep is not None and fe != want_ep:
+                        continue  # OR fulltext returns every episode; keep the asked one
+                    if want_season is not None and fs is not None and fs != want_season:
+                        continue  # an S02E02 file is not the requested S01E02
+            else:
+                if not _matches_anywhere(titles, r.name):
+                    continue
             seen.add(r.ident)
             merged.append(r)
 

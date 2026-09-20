@@ -9,8 +9,11 @@ import asyncio
 import json
 import logging
 import shutil
+import subprocess
+import tarfile
 import time
 import uuid
+import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -23,6 +26,69 @@ logger = logging.getLogger("websharr.downloads")
 
 CHUNK_SIZE = 1024 * 1024
 HISTORY_CAP = 500  # keep this many completed/failed records in the UI history
+
+UNPACK_EXTENSIONS = (
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".tbz2", ".xz", ".txz",
+)
+
+
+def _is_compressed_archive(filename: str) -> bool:
+    name_l = filename.lower()
+    return any(name_l.endswith(ext) for ext in UNPACK_EXTENSIONS)
+
+
+async def _unpack_archive(archive_path: Path, dest_dir: Path) -> bool:
+    """Extract an archive (.zip, .rar, .7z, .tar, .gz) into dest_dir and delete the archive on success."""
+    name_lower = archive_path.name.lower()
+    extracted = False
+    loop = asyncio.get_running_loop()
+
+    # 1. Try 7z if available in PATH (handles .zip, .rar, .7z, etc.)
+    if shutil.which("7z"):
+        try:
+            cmd = ["7z", "x", "-y", f"-o{dest_dir}", str(archive_path)]
+            proc = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            )
+            if proc.returncode == 0:
+                extracted = True
+            else:
+                logger.warning("7z extraction failed for %s (code %d): %s",
+                               archive_path.name, proc.returncode, proc.stderr)
+        except Exception as e:
+            logger.warning("7z extraction error for %s: %s", archive_path.name, e)
+
+    # 2. Python standard library fallbacks (zipfile, tarfile)
+    if not extracted:
+        if name_lower.endswith(".zip"):
+            try:
+                def _unzip():
+                    with zipfile.ZipFile(archive_path, "r") as zf:
+                        zf.extractall(dest_dir)
+                await loop.run_in_executor(None, _unzip)
+                extracted = True
+            except Exception as e:
+                logger.warning("zipfile extraction error for %s: %s", archive_path.name, e)
+        elif any(name_lower.endswith(ext) for ext in (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")):
+            try:
+                def _untar():
+                    with tarfile.open(archive_path, "r:*") as tf:
+                        tf.extractall(dest_dir)
+                await loop.run_in_executor(None, _untar)
+                extracted = True
+            except Exception as e:
+                logger.warning("tarfile extraction error for %s: %s", archive_path.name, e)
+
+    if extracted:
+        try:
+            archive_path.unlink(missing_ok=True)
+            logger.info("Extracted and removed archive %s in %s", archive_path.name, dest_dir)
+        except OSError as e:
+            logger.warning("Failed to remove extracted archive %s: %s", archive_path.name, e)
+        return True
+
+    return False
 
 
 def _total_size(resp: httpx.Response, offset: int) -> int:
@@ -99,7 +165,7 @@ class DownloadManager:
         check ("directory does not exist inside the container") passes before
         the first download of that category completes."""
         self._incomplete_dir.mkdir(parents=True, exist_ok=True)
-        for category in ("tv", "movies"):
+        for category in ("tv", "movies", "music", "books", "games", "default"):
             (self._complete_dir / category).mkdir(parents=True, exist_ok=True)
 
     # -- persistence -------------------------------------------------------
@@ -362,8 +428,14 @@ class DownloadManager:
 
         final_dir = self._complete_dir / job.category / job.job_name
         final_dir.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(target), final_dir / job.name)
+        dest_file = final_dir / job.name
+        shutil.move(str(target), dest_file)
         shutil.rmtree(work_dir, ignore_errors=True)
+
+        if _is_compressed_archive(dest_file.name):
+            logger.info("Unpacking archive %s in %s", dest_file.name, final_dir)
+            await _unpack_archive(dest_file, final_dir)
+
         job.storage = str(final_dir)
         job.size = max(job.size, job.downloaded)
 

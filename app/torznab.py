@@ -38,11 +38,44 @@ TORZNAB_NS = "http://torznab.com/schemas/2015/feed"
 NEWZNAB_NS = "http://www.newznab.com/DTD/2010/feeds/attributes/"
 
 CAT_MOVIES = "2000"
+CAT_AUDIO = "3000"
+CAT_PC = "4000"
 CAT_TV = "5000"
+CAT_BOOKS = "7000"
 
 VIDEO_EXTENSIONS = (
     ".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv", ".ts", ".m2ts", ".webm", ".mpg", ".mpeg",
 )
+AUDIO_EXTENSIONS = (
+    ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma", ".wav", ".alac",
+)
+BOOK_EXTENSIONS = (
+    ".epub", ".pdf", ".mobi", ".azw", ".azw3", ".cbr", ".cbz", ".djvu",
+)
+ARCHIVE_EXTENSIONS = (
+    ".iso", ".zip", ".rar", ".7z", ".tar", ".gz", ".exe", ".bin",
+)
+COMPRESSED_EXTENSIONS = (
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".tbz2", ".xz",
+)
+ALL_EXTENSIONS = VIDEO_EXTENSIONS + AUDIO_EXTENSIONS + BOOK_EXTENSIONS + ARCHIVE_EXTENSIONS
+
+
+def _is_video(name: str) -> bool:
+    return name.lower().endswith(VIDEO_EXTENSIONS)
+
+
+def _is_allowed_file(name: str, category: str = "video") -> bool:
+    name_lower = name.lower()
+    if category == "video":
+        return name_lower.endswith(VIDEO_EXTENSIONS + COMPRESSED_EXTENSIONS)
+    if category == "audio":
+        return name_lower.endswith(AUDIO_EXTENSIONS + COMPRESSED_EXTENSIONS)
+    if category in ("docs", "books"):
+        return name_lower.endswith(BOOK_EXTENSIONS + COMPRESSED_EXTENSIONS)
+    if category in ("archives", "games"):
+        return name_lower.endswith(ARCHIVE_EXTENSIONS)
+    return name_lower.endswith(ALL_EXTENSIONS)
 
 # TMDB original_language (ISO 639-1) -> the language name Sonarr/Radarr expect in
 # a newznab `language` attribute. Only the codes we can map are tagged; anything
@@ -135,11 +168,23 @@ def _caps() -> Response:
                   {"available": "yes", "supportedParams": "q,season,ep,tvdbid,imdbid"})
     ET.SubElement(searching, "movie-search",
                   {"available": "yes", "supportedParams": "q,imdbid,tmdbid"})
+    ET.SubElement(searching, "music-search",
+                  {"available": "yes", "supportedParams": "q"})
+    ET.SubElement(searching, "book-search",
+                  {"available": "yes", "supportedParams": "q"})
     cats = ET.SubElement(caps, "categories")
     movies = ET.SubElement(cats, "category", {"id": CAT_MOVIES, "name": "Movies"})
     ET.SubElement(movies, "subcat", {"id": "2040", "name": "Movies/HD"})
     tv = ET.SubElement(cats, "category", {"id": CAT_TV, "name": "TV"})
     ET.SubElement(tv, "subcat", {"id": "5040", "name": "TV/HD"})
+    audio = ET.SubElement(cats, "category", {"id": CAT_AUDIO, "name": "Audio"})
+    ET.SubElement(audio, "subcat", {"id": "3010", "name": "Audio/MP3"})
+    ET.SubElement(audio, "subcat", {"id": "3040", "name": "Audio/Lossless"})
+    ET.SubElement(audio, "subcat", {"id": "3030", "name": "Audio/Audiobook"})
+    books = ET.SubElement(cats, "category", {"id": CAT_BOOKS, "name": "Books"})
+    ET.SubElement(books, "subcat", {"id": "7020", "name": "Books/EBook"})
+    pc = ET.SubElement(cats, "category", {"id": CAT_PC, "name": "PC"})
+    ET.SubElement(pc, "subcat", {"id": "4050", "name": "PC/Games"})
     return _xml_response(caps)
 
 
@@ -425,6 +470,35 @@ def matches_query(query, name: str) -> bool:
     return False
 
 
+def _matches_anywhere(query, name: str) -> bool:
+    """True when all tokens from any search title appear anywhere in the file name.
+
+    Used for music, books, and archives/games where files are often named
+    'Artist - Album' or 'Author - Title' instead of starting with the title.
+    """
+    ntoks = set(normalize_text(name).split())
+    for title in _as_titles(query):
+        tokens = [t for t in normalize_text(title).split() if not _EP_TOKEN.match(t)]
+        if not tokens:
+            return True
+        if all(tk in ntoks for tk in tokens):
+            return True
+    return False
+
+
+def _detect_category(name: str, default: str = CAT_MOVIES) -> str:
+    name_l = name.lower()
+    if name_l.endswith(VIDEO_EXTENSIONS):
+        return default if default in (CAT_MOVIES, CAT_TV) else CAT_MOVIES
+    if name_l.endswith(AUDIO_EXTENSIONS):
+        return CAT_AUDIO
+    if name_l.endswith(BOOK_EXTENSIONS):
+        return CAT_BOOKS
+    if name_l.endswith(ARCHIVE_EXTENSIONS):
+        return CAT_PC
+    return default
+
+
 def file_marker(query, name: str) -> tuple[int | None, int | None]:
     """(season, episode) implied by the file name, read from the first marker
     after the (matched) show title: SxxEyy, 1x05, or a bare "05" (no season).
@@ -441,13 +515,20 @@ def file_marker(query, name: str) -> tuple[int | None, int | None]:
         if series and ntoks[:len(series)] != series:
             continue  # this title isn't the one the file starts with
         is_special = False
-        for tk in ntoks[len(series):]:
+        tail = ntoks[len(series):]
+        for i, tk in enumerate(tail):
             if tk in ("special", "specials"):
                 is_special = True
                 continue
             m = re.match(r"^s(\d{1,2})e(\d{1,3})$", tk) or re.match(r"^(\d{1,2})x(\d{1,3})$", tk)
             if m:
                 return int(m.group(1)), int(m.group(2))
+            m_s = re.match(r"^s(\d{1,2})$", tk)
+            if m_s:
+                return int(m_s.group(1)), None
+            if tk in ("season", "serie", "seria") and i + 1 < len(tail):
+                if tail[i + 1].isdigit():
+                    return int(tail[i + 1]), None
             if tk.isdigit() and len(tk) <= 2:  # bare episode number (skip years/1080)
                 return (0 if is_special else None), int(tk)
         break
@@ -536,6 +617,8 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
             f"&nzbname={urllib.parse.quote(title)}"
         )
         ET.SubElement(item, "link").text = link
+        if r.ident and r.ident != "websharr-online":
+            ET.SubElement(item, "comments").text = f"https://webshare.cz/#/file/{r.ident}/"
         ET.SubElement(item, "pubDate").text = _pub_date(r.ident)
         ET.SubElement(item, "size").text = str(r.size)
         ET.SubElement(item, "enclosure", {
@@ -549,10 +632,11 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
         # the Czech dub title ("Kačeří příběhy ...") is a Czech release even
         # when it carries no "dabing" marker.
         item_lang = dub_language(r.name) or inferred or language
+        item_category = category if category not in ("", "all") else _detect_category(r.name)
         # Emit attrs in both namespaces so the feed parses whether Sonarr/Radarr
         # treats it as Newznab (usenet — the correct choice) or Torznab.
         for ns in (NEWZNAB_NS, TORZNAB_NS):
-            ET.SubElement(item, "{%s}attr" % ns, {"name": "category", "value": category})
+            ET.SubElement(item, "{%s}attr" % ns, {"name": "category", "value": item_category})
             ET.SubElement(item, "{%s}attr" % ns, {"name": "size", "value": str(r.size)})
             ET.SubElement(item, "{%s}attr" % ns,
                           {"name": "grabs", "value": str(r.positive_votes)})
@@ -572,22 +656,69 @@ async def torznab_api(request: Request):
     t = params.get("t", "caps")
     if t == "caps":
         return _caps()
-    if t not in ("search", "tvsearch", "movie"):
+    if t not in ("search", "tvsearch", "movie", "music", "book"):
         return _error(203, f"Function '{t}' not available")
 
-    t, q, season, ep = parse_query(t, params.get("q", ""), params.get("season"), params.get("ep"))
-    # A *arr query may match a Webshare/CZ title (alias map or TMDB lookup);
-    # search all and accept files matching any of them. `display` is the nice
-    # title used to prefix the release name.
-    titles, display, language, czech_titles, year = await expand_titles(
-        t, q, params.get("cat"), tvdbid=params.get("tvdbid"),
-        imdbid=params.get("imdbid"), tmdbid=params.get("tmdbid"))
-    queries = []
-    for title in titles:
-        for v in build_queries(t, title, season, ep):
-            if v not in queries:
-                queries.append(v)
-    category = CAT_TV if t == "tvsearch" else CAT_MOVIES
+    cat_param = (params.get("cat", "") or "").strip()
+    cat_list = [c.strip() for c in cat_param.split(",") if c.strip()]
+
+    if t == "tvsearch":
+        category = CAT_TV
+        ws_category = "video"
+    elif t == "movie":
+        category = CAT_MOVIES
+        ws_category = "video"
+    elif t == "music":
+        category = CAT_AUDIO
+        ws_category = "audio"
+    elif t == "book":
+        category = CAT_BOOKS
+        ws_category = "docs"
+    else:  # t == "search"
+        if any(c.startswith("3") for c in cat_list):
+            category = CAT_AUDIO
+            ws_category = "audio"
+        elif any(c.startswith("7") or c.startswith("8") for c in cat_list):
+            category = CAT_BOOKS
+            ws_category = "docs"
+        elif any(c.startswith("4") for c in cat_list):
+            category = CAT_PC
+            ws_category = "archives"
+        elif any(c.startswith("5") for c in cat_list):
+            category = CAT_TV
+            ws_category = "video"
+        elif any(c.startswith("2") for c in cat_list):
+            category = CAT_MOVIES
+            ws_category = "video"
+        elif cat_list:
+            category = cat_list[0]
+            ws_category = "all"
+        else:
+            category = CAT_MOVIES
+            ws_category = "all"
+
+    if ws_category == "video":
+        t, q, season, ep = parse_query(t, params.get("q", ""), params.get("season"), params.get("ep"))
+        # A *arr query may match a Webshare/CZ title (alias map or TMDB lookup);
+        # search all and accept files matching any of them. `display` is the nice
+        # title used to prefix the release name.
+        titles, display, language, czech_titles, year = await expand_titles(
+            t, q, params.get("cat"), tvdbid=params.get("tvdbid"),
+            imdbid=params.get("imdbid"), tmdbid=params.get("tmdbid"))
+        queries = []
+        for title in titles:
+            for v in build_queries(t, title, season, ep):
+                if v not in queries:
+                    queries.append(v)
+    else:
+        q = (params.get("q", "") or "").strip()
+        season, ep = None, None
+        titles = [q] if q else []
+        display = q
+        language = ""
+        czech_titles = []
+        year = 0
+        queries = [q] if q else []
 
     if not queries:
         # Webshare has no RSS/"latest" feed, but Sonarr/Radarr reject an indexer
@@ -614,38 +745,50 @@ async def torznab_api(request: Request):
     episodes: dict[str, int] = {}  # season search: each file's own episode number
     for query in queries:
         try:
-            results = await client.search(query, limit=limit, offset=offset)
+            results = await client.search(query, category="", limit=limit, offset=offset)
         except (WebshareError, httpx.HTTPError) as exc:
             logger.error("Search '%s' failed: %s", query, exc)
             return _error(900, f"Webshare search failed: {exc}")
         for r in results:
-            if r.ident in seen or r.password or not _is_video(r.name):
+            if r.ident in seen or r.password or not _is_allowed_file(r.name, ws_category):
                 continue
-            if not matches_query(titles, r.name):
-                continue  # drop Webshare's loose non-matching fulltext hits
-            if year_conflict(r.name, year):
-                continue  # same-named other title (DuckTales 1987 vs 2017)
-            if want_ep is not None or want_season is not None:
-                fs, fe = file_marker(titles, r.name)
-                if want_ep is not None and fe != want_ep:
-                    continue  # OR fulltext returns every episode; keep the asked one
-                if want_season is not None and fs is not None and fs != want_season:
-                    continue  # an S02E02 file is not the requested S01E02
-                if want_ep is None:
-                    # Season search (Sonarr's automatic search when several
-                    # episodes of a season are missing). Webshare has no season
-                    # packs, so release each file under its own episode; a bare
-                    # "05" only counts in season 1 (see build_queries).
-                    if fe is None or (fs is None and want_season != 1):
-                        continue
-                    episodes[r.ident] = fe
+            if ws_category == "video":
+                if not matches_query(titles, r.name):
+                    continue  # drop Webshare's loose non-matching fulltext hits
+                if year_conflict(r.name, year):
+                    continue  # same-named other title (DuckTales 1987 vs 2017)
+                if want_ep is not None or want_season is not None:
+                    fs, fe = file_marker(titles, r.name)
+                    if want_ep is not None and fe != want_ep:
+                        continue  # OR fulltext returns every episode; keep the asked one
+                    if want_season is not None and fs is not None and fs != want_season:
+                        continue  # an S02E02 file is not the requested S01E02
+                    if want_ep is None:
+                        # Season search (Sonarr's automatic search when several
+                        # episodes of a season are missing).
+                        if fs == want_season and fe is None:
+                            # Whole season pack (e.g. S01.rar)
+                            pass
+                        elif fe is not None:
+                            # Individual episode in season search
+                            if fs is None and want_season != 1:
+                                continue
+                            episodes[r.ident] = fe
+                        else:
+                            continue
+            else:
+                if not _matches_anywhere(titles, r.name):
+                    continue
             seen.add(r.ident)
             merged.append(r)
 
     merged.sort(key=lambda r: (-relevance(queries, r.name), -r.size))
     logger.info("Newznab %s q=%r -> %d results", t, q, len(merged))
     shown = merged[:limit]
-    heights, audio = await _probe(client, shown)
+    if ws_category == "video":
+        heights, audio = await _probe(client, shown)
+    else:
+        heights, audio = {}, {}
     return _render_feed(request, shown, category, heights=heights, audio=audio,
                         query=display, season=(season if t == "tvsearch" else None), ep=ep,
                         episodes=episodes, language=language, czech_titles=czech_titles)

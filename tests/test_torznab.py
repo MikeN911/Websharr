@@ -447,6 +447,7 @@ def test_tvsearch_returns_items(client, fake_webshare):
 
     item = items[0]
     assert item.findtext("size") == "4000000000"
+    assert item.findtext("comments") == "https://webshare.cz/#/file/id1/"
     enclosure = item.find("enclosure")
     assert "/torznab/nzb/id1" in enclosure.get("url")
     assert "apikey=testkey" in enclosure.get("url")
@@ -636,3 +637,133 @@ def test_nzb_download_non_ascii_name(client):
     assert "filename*" not in cd                    # no RFC 5987 form
     assert "Rad" in cd and "Řád" not in cd          # transliterated
     cd.encode("ascii")                              # pure ASCII, header-safe
+
+
+def test_is_allowed_file_and_matches_anywhere():
+    from app.torznab import _is_allowed_file, _matches_anywhere
+
+    # Video category (allows video + compressed archives for season packs)
+    assert _is_allowed_file("movie.mkv", "video")
+    assert _is_allowed_file("Zaklinac.S01.rar", "video")
+    assert _is_allowed_file("Zaklinac.S01.zip", "video")
+    assert not _is_allowed_file("song.mp3", "video")
+
+    # Audio category (allows audio + compressed archives for albums)
+    assert _is_allowed_file("track.mp3", "audio")
+    assert _is_allowed_file("track.flac", "audio")
+    assert _is_allowed_file("Album.rar", "audio")
+    assert _is_allowed_file("Discography.zip", "audio")
+    assert not _is_allowed_file("movie.mkv", "audio")
+
+    # Books/docs category (allows books + compressed archives)
+    assert _is_allowed_file("book.epub", "docs")
+    assert _is_allowed_file("book.pdf", "books")
+    assert _is_allowed_file("Trilogie.rar", "docs")
+    assert not _is_allowed_file("game.iso", "docs")
+
+    # Archives/games category
+    assert _is_allowed_file("game.iso", "archives")
+    assert _is_allowed_file("installer.exe", "games")
+    assert not _is_allowed_file("track.flac", "archives")
+
+    # All category
+    assert _is_allowed_file("movie.mkv", "all")
+    assert _is_allowed_file("track.flac", "all")
+    assert _is_allowed_file("book.epub", "all")
+    assert _is_allowed_file("game.iso", "all")
+    assert not _is_allowed_file("file.txt", "all")
+
+    # _matches_anywhere matches regardless of position
+    assert _matches_anywhere("Karel Gott", "01 - Karel Gott - Lady Carneval (1969).mp3")
+    assert _matches_anywhere(["Andrzej Sapkowski", "Zaklinac"], "Zaklinac - Posledni prani - Andrzej Sapkowski.epub")
+    assert not _matches_anywhere("Karel Gott", "Helena Vondrackova - Sladke mameni.mp3")
+
+
+def test_caps_advertises_audio_books_pc(client):
+    resp = client.get("/torznab/api", params={"t": "caps", "apikey": "testkey"})
+    assert resp.status_code == 200
+    root = ET.fromstring(resp.content)
+
+    # Searching functions
+    searching = root.find("searching")
+    assert searching is not None
+    assert searching.find("music-search") is not None
+    assert searching.find("book-search") is not None
+
+    # Categories
+    cats = {c.get("id"): c.get("name") for c in root.findall("categories/category")}
+    assert cats.get("3000") == "Audio"
+    assert cats.get("7000") == "Books"
+    assert cats.get("4000") == "PC"
+
+
+def test_music_search(client, fake_webshare):
+    fake_webshare.results = [
+        SearchResult("a1", "Karel Gott - Lady Carneval.mp3", 10_000_000),
+        SearchResult("a2", "Karel Gott - Best of.flac", 500_000_000),
+        SearchResult("a3", "Karel Gott - Diskografie.rar", 2_000_000_000),  # archive kept
+        SearchResult("v1", "Karel Gott - Koncert.mkv", 4_000_000_000),     # video ignored in music
+    ]
+    resp = client.get("/torznab/api", params={"t": "music", "q": "Karel Gott", "apikey": "testkey"})
+    assert resp.status_code == 200
+    root = ET.fromstring(resp.content)
+    items = root.findall("channel/item")
+    assert len(items) == 3
+    assert {i.findtext("title") for i in items} == {
+        "Karel Gott - Lady Carneval", "Karel Gott - Best of", "Karel Gott - Diskografie",
+    }
+    # Category attribute should be 3000
+    for item in items:
+        cat_attr = item.find(f"{TZNS}attr[@name='category']")
+        assert cat_attr is not None
+        assert cat_attr.get("value") == "3000"
+
+
+def test_season_pack_archive_search(client, fake_webshare):
+    fake_webshare.results = [
+        SearchResult("s1", "Zaklinac.S01.CZ.Dabing.rar", 15_000_000_000),
+        SearchResult("s2", "Zaklinac.S02.CZ.Dabing.rar", 18_000_000_000),
+    ]
+    # Sonarr searches for Season 1 (season pack)
+    resp = client.get("/torznab/api", params={"t": "tvsearch", "q": "Zaklinac", "season": "1", "apikey": "testkey"})
+    assert resp.status_code == 200
+    root = ET.fromstring(resp.content)
+    items = root.findall("channel/item")
+    assert len(items) == 1
+    assert "S01" in items[0].findtext("title")
+
+
+def test_book_search(client, fake_webshare):
+    fake_webshare.results = [
+        SearchResult("b1", "Andrzej Sapkowski - Zaklinac I.epub", 2_000_000),
+        SearchResult("b2", "Andrzej Sapkowski - Zaklinac II.pdf", 5_000_000),
+        SearchResult("b3", "Andrzej Sapkowski - Zaklinac Komplet.zip", 50_000_000),  # archive kept
+        SearchResult("v1", "Zaklinac S01E01.mkv", 1_000_000_000),                    # video ignored
+    ]
+    resp = client.get("/torznab/api", params={"t": "book", "q": "Zaklinac", "apikey": "testkey"})
+    assert resp.status_code == 200
+    root = ET.fromstring(resp.content)
+    items = root.findall("channel/item")
+    assert len(items) == 3
+    for item in items:
+        cat_attr = item.find(f"{TZNS}attr[@name='category']")
+        assert cat_attr is not None
+        assert cat_attr.get("value") == "7000"
+
+
+def test_games_search_by_cat(client, fake_webshare):
+    fake_webshare.results = [
+        SearchResult("g1", "Cyberpunk 2077 GOTY.iso", 70_000_000_000),
+        SearchResult("v1", "Cyberpunk Edgerunners S01E01.mkv", 1_000_000_000),
+    ]
+    resp = client.get("/torznab/api", params={"t": "search", "q": "Cyberpunk", "cat": "4000", "apikey": "testkey"})
+    assert resp.status_code == 200
+    root = ET.fromstring(resp.content)
+    items = root.findall("channel/item")
+    assert len(items) == 1
+    assert items[0].findtext("title") == "Cyberpunk 2077 GOTY"
+    cat_attr = items[0].find(f"{TZNS}attr[@name='category']")
+    assert cat_attr is not None
+    assert cat_attr.get("value") == "4000"
+
+

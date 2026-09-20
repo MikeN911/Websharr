@@ -198,17 +198,16 @@ class WebshareClient:
                 return await self._post(path, data)
             raise
 
-    async def search(self, query: str, limit: int = 60, offset: int = 0) -> list[SearchResult]:
-        root = await self._authed_post(
-            "/search/",
-            {
-                "what": query,
-                "category": "video",
-                "sort": "largest",
-                "limit": str(limit),
-                "offset": str(offset),
-            },
-        )
+    async def search(self, query: str, category: str = "video", limit: int = 60, offset: int = 0) -> list[SearchResult]:
+        data = {
+            "what": query,
+            "sort": "largest",
+            "limit": str(limit),
+            "offset": str(offset),
+        }
+        if category and category.lower() not in ("all", "*"):
+            data["category"] = category.lower()
+        root = await self._authed_post("/search/", data)
         results: list[SearchResult] = []
         for f in root.findall("file"):
             try:

@@ -14,7 +14,13 @@ def test_version_and_config(client):
     assert "version" in _api(client, mode="version").json()
     cfg = _api(client, mode="get_config").json()["config"]
     assert any(c["name"] == "tv" for c in cfg["categories"])
+    assert any(c["name"] == "music" for c in cfg["categories"])
+    assert any(c["name"] == "books" for c in cfg["categories"])
+    assert any(c["name"] == "games" for c in cfg["categories"])
     assert cfg["misc"]["complete_dir"]
+
+    cats = _api(client, mode="get_cats").json()["categories"]
+    assert set(cats) == {"*", "tv", "movies", "music", "books", "games"}
 
 
 def test_bad_apikey(client):
@@ -59,7 +65,7 @@ def test_addfile_download_lifecycle(client, fake_webshare, tmp_path, httpserver=
         assert slot["nzo_id"] == nzo_id
         assert slot["status"] == "Completed"
         assert slot["category"] == "tv"
-        assert slot["storage"].endswith("tv/Zaklinac S01E05 1080p")
+        assert slot["storage"].replace("\\", "/").endswith("tv/Zaklinac S01E05 1080p")
 
         from pathlib import Path
         final = Path(slot["storage"]) / "zaklinac.raw.file.mkv"

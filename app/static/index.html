@@ -333,7 +333,8 @@
   .rrow { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--border-soft); }
   .rwrap:last-child .rrow { border-bottom: none; }
   .rrow:hover { background: var(--panel-hover); }
-  .rtitle { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rtitle { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: inherit; text-decoration: none; }
+  .rtitle:hover { color: var(--accent); text-decoration: underline; }
   .rsize { color: var(--muted); font-size: 13.5px; font-weight: 600; width: 74px; text-align: right; flex-shrink: 0; }
   .rgrab { width: 96px; display: flex; justify-content: flex-end; flex-shrink: 0; }
   .grabbed { color: var(--green); font-size: 13px; font-weight: 800; }
@@ -609,6 +610,9 @@
         <option value="search">any</option>
         <option value="tvsearch" selected>shows</option>
         <option value="movie">movies</option>
+        <option value="music">music</option>
+        <option value="book">books</option>
+        <option value="games">games</option>
       </select>
       <input id="season" type="number" min="0" placeholder="Season">
       <input id="ep" type="number" min="0" placeholder="Episode">
@@ -700,20 +704,20 @@
         <tr><td>URL</td><td><code>http://websharr:9797/torznab</code></td></tr>
         <tr><td>API Path</td><td><code>/api</code></td></tr>
         <tr><td>API Key</td><td>copy from <b>Settings</b> (in this UI)</td></tr>
-        <tr><td>Categories</td><td><code>5000</code> (TV) · <code>2000</code> (Movies)</td></tr>
+        <tr><td>Categories</td><td><code>5000</code> (TV) · <code>2000</code> (Movies) · <code>3000</code> (Audio) · <code>7000</code> (Books) · <code>4000</code> (PC/Games)</td></tr>
       </table>
     </div>
 
     <div class="hcard">
       <h3>2 · Add the download client &nbsp;<span class="badge">SABnzbd</span></h3>
-      <p class="shint">Sonarr/Radarr → Settings → Download Clients → <b>+</b> → <b>SABnzbd</b>.
+      <p class="shint">Sonarr/Radarr/Lidarr/Readarr → Settings → Download Clients → <b>+</b> → <b>SABnzbd</b>.
         Same API key as the indexer.</p>
       <table class="htab">
         <tr><td>Host</td><td><code>websharr</code></td></tr>
         <tr><td>Port</td><td><code>9797</code></td></tr>
         <tr><td>URL Base</td><td><code>/sabnzbd</code></td></tr>
         <tr><td>API Key</td><td>copy from <b>Settings</b></td></tr>
-        <tr><td>Category</td><td><code>tv</code> (Sonarr) · <code>movies</code> (Radarr)</td></tr>
+        <tr><td>Category</td><td><code>tv</code> (Sonarr) · <code>movies</code> (Radarr) · <code>music</code> (Lidarr) · <code>books</code> (Readarr)</td></tr>
       </table>
     </div>
 
@@ -970,7 +974,15 @@ function clockTime(ts) {
   return new Date(ts * 1000).toLocaleTimeString([], { hour12: false });
 }
 // Friendly label for the internal category values Sonarr/SABnzbd use.
-function catLabel(c) { return c === "*" ? "other" : c === "tv" ? "shows" : c; }
+function catLabel(c) {
+  if (c === "*") return "other";
+  if (c === "tv") return "shows";
+  if (c === "movies") return "movies";
+  if (c === "music") return "music";
+  if (c === "books") return "books";
+  if (c === "games") return "games";
+  return c;
+}
 // The queue card the dragged one should be inserted before, based on cursor Y
 // (the first card whose vertical midpoint is below the pointer).
 function dragAfter(list, y) {
@@ -1546,7 +1558,7 @@ const App = {
         ${results.map((r, i) => `
         <div class="rwrap">
           <div class="rrow" data-ident="${esc(r.ident)}">
-            <span class="rtitle" title="${esc(r.name)}">${esc(r.title)}</span>
+            <a class="rtitle" href="https://webshare.cz/#/file/${esc(r.ident)}/" target="_blank" rel="noopener noreferrer" title="${esc(r.name)}">${esc(r.title)}</a>
             <span class="rmeta rformat">${esc(r.format || "—")}</span>
             <span class="rmeta rres dim" data-res>…</span>
             <span class="rmeta rdur dim" data-dur>…</span>
@@ -1564,6 +1576,7 @@ const App = {
 
   // Does the release name already carry what *arr needs to parse it?
   parseable(name, t) {
+    if (t === "music" || t === "book" || t === "games") return true;
     if (t === "movie") return /\b(19|20)\d{2}\b/.test(name);
     return /s\d{1,2}\s*e\d{1,2}/i.test(name) || /\b\d{1,2}x\d{2}\b/i.test(name);
   },
@@ -1571,9 +1584,9 @@ const App = {
   grabClick(r, i, btn) {
     const t = this.lastSearch.t;
     // If the release already parses (filename has SxxEyy / a year, or the
-    // search itself supplied season+ep), grab straight away.
+    // search itself supplied season+ep, or non-video type), grab straight away.
     if (this.parseable(r.release, t) || this.parseable(r.name, t)) {
-      const cat = t === "movie" ? "movies" : t === "tvsearch" ? "tv" : "*";
+      const cat = t === "movie" ? "movies" : t === "tvsearch" ? "tv" : t === "music" ? "music" : t === "book" ? "books" : t === "games" ? "games" : "*";
       this.doGrab(r, r.release, cat, btn);
     } else {
       this.openGrabForm(r, i);

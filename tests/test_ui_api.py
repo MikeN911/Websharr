@@ -83,6 +83,7 @@ def test_ui_search_returns_json(client, fake_webshare):
     assert "/torznab/nzb/id2" in results[0]["nzb_url"]
     assert "nzbname=Zaklinac" in results[0]["nzb_url"]
     assert "apikey=testkey" in results[0]["nzb_url"]
+    assert results[0]["webshare_url"] == "https://webshare.cz/#/file/id2/"
 
 
 def test_ui_search_filters_wrong_episode(client, fake_webshare):
@@ -199,3 +200,27 @@ def test_ui_history_shows_failed_error(client, fake_webshare):
 
     job = next(j for j in _ui(client, "history").json()["jobs"] if j["nzo_id"] == nzo_id)
     assert job["error"]
+
+
+def test_ui_search_music_and_books(client, fake_webshare):
+    fake_webshare.results = [
+        SearchResult("m1", "Karel Gott - Srdce nehasnou.mp3", 8_000_000),
+        SearchResult("b1", "Andrzej Sapkowski - Zaklinac.epub", 3_000_000),
+        SearchResult("g1", "Diablo 2 Resurrected.iso", 30_000_000_000),
+    ]
+
+    # Music search
+    resp_music = _ui(client, "search", q="Karel Gott", t="music").json()
+    assert [r["ident"] for r in resp_music["results"]] == ["m1"]
+    assert resp_music["results"][0]["format"] == "mp3"
+
+    # Books search
+    resp_books = _ui(client, "search", q="Zaklinac", t="book").json()
+    assert [r["ident"] for r in resp_books["results"]] == ["b1"]
+    assert resp_books["results"][0]["format"] == "epub"
+
+    # Games search
+    resp_games = _ui(client, "search", q="Diablo", t="games").json()
+    assert [r["ident"] for r in resp_games["results"]] == ["g1"]
+    assert resp_games["results"][0]["format"] == "iso"
+

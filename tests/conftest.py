@@ -46,7 +46,8 @@ class FakeWebshareClient:
             raise WebshareError("Webshare /salt/ failed: User not found.")
         return fake_digest(username, password)
 
-    async def search(self, query: str, limit: int = 60, offset: int = 0):
+    async def search(self, query: str, category: str = "video", limit: int = 60, offset: int = 0):
+        self.last_category = category
         if self.fuzzy:
             return list(self.results)
         return [r for r in self.results if all(

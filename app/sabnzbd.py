@@ -97,6 +97,9 @@ def _get_config_payload() -> dict:
                 {"name": "*", "pp": "3", "script": "None", "dir": "", "priority": 0},
                 {"name": "tv", "pp": "3", "script": "None", "dir": "tv", "priority": 0},
                 {"name": "movies", "pp": "3", "script": "None", "dir": "movies", "priority": 0},
+                {"name": "music", "pp": "3", "script": "None", "dir": "music", "priority": 0},
+                {"name": "books", "pp": "3", "script": "None", "dir": "books", "priority": 0},
+                {"name": "games", "pp": "3", "script": "None", "dir": "games", "priority": 0},
             ],
             "servers": [{"name": "websharr", "host": "webshare.cz", "connections": 4}],
             "sorters": [],
@@ -166,7 +169,7 @@ async def sabnzbd_api(request: Request):
         return JSONResponse(_get_config_payload())
 
     if mode == "get_cats":
-        return JSONResponse({"categories": ["*", "tv", "movies"]})
+        return JSONResponse({"categories": ["*", "tv", "movies", "music", "books", "games"]})
 
     if mode == "fullstatus":
         return JSONResponse({"status": {"version": SAB_VERSION, "uptime": "1h",

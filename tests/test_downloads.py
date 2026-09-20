@@ -327,3 +327,38 @@ def test_reorder_changes_queue_order(tmp_path, monkeypatch):
             assert manager.get(ids[1]).status == "queued"
     finally:
         httpd.shutdown()
+
+
+def test_auto_unpack_zip_download(tmp_path, monkeypatch):
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("track01.mp3", b"audio1")
+        zf.writestr("track02.mp3", b"audio2")
+    payload = buf.getvalue()
+
+    httpd, _ = _serve(payload, support_range=True)
+    try:
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/f.zip"
+        with _start_app(tmp_path, monkeypatch, url) as client:
+            nzb = build_nzb("zip1", "Album.zip", len(payload))
+            resp = client.post(
+                "/sabnzbd/api",
+                params={"mode": "addfile", "apikey": "testkey", "cat": "music"},
+                files={"nzbfile": ("Gott - Album.nzb", nzb.encode(), "application/x-nzb")},
+            )
+            nzo_id = resp.json()["nzo_ids"][0]
+            manager = app.state.downloads
+            assert wait_for(lambda: (j := manager.get(nzo_id)) and j.status == "completed")
+            job = manager.get(nzo_id)
+
+            dest = Path(job.storage)
+            assert (dest / "track01.mp3").read_bytes() == b"audio1"
+            assert (dest / "track02.mp3").read_bytes() == b"audio2"
+            # Archive itself was cleaned up
+            assert not (dest / "Album.zip").exists()
+    finally:
+        httpd.shutdown()
+
