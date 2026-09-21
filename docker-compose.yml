@@ -23,4 +23,5 @@ services:
             # Must be the SAME host path that Sonarr/Radarr see as their download dir,
             # otherwise use Remote Path Mappings in *arr.
             - ${DOWNLOADS_HOST_PATH:-/data/downloads/websharr}:/downloads
-            - ./config:/config
+            - ${MEDIA_HOST_PATH:-/data/media}:/media
+            - ${CONFIG_PATH:-./config}:/config

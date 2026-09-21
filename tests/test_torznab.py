@@ -22,7 +22,8 @@ def test_build_queries():
     # Later seasons omit the bare number (would collide across seasons).
     assert build_queries("tvsearch", "Zaklinac", "2", "5") == \
         ["Zaklinac S02E05", "Zaklinac 2x05", "ZaklinacS02E05", "Zaklinac2x05"]
-    assert build_queries("tvsearch", "Zaklinac", "2", None) == ["Zaklinac S02", "ZaklinacS02"]
+    assert build_queries("tvsearch", "Zaklinac", "2", None) == \
+        ["Zaklinac S02", "ZaklinacS02", "Zaklinac 2 serie", "Zaklinac 2. serie", "Zaklinac serie 2", "Zaklinac 2 sezona"]
     assert build_queries("movie", "Vlny 2024", None, None) == ["Vlny 2024"]
     assert build_queries("search", "  ", None, None) == []
 
@@ -817,6 +818,44 @@ def test_alias_regex_and_category_override(client, fake_webshare, monkeypatch):
     cat_attr = items[0].find(f"{NZNS}attr[@name='category']")
     assert cat_attr is not None
     assert cat_attr.get("value") == "5000"
+
+
+def test_alias_czech_season_pack_traitors(client, fake_webshare, monkeypatch):
+    """The Traitors (CZ) aliased to Zrd-CZ matches 'Zrd-CZ 1 série.rar',
+    extracts Season 1, and marks as category 5000 (TV)."""
+    from app.settings import settings
+    from app.torznab import _detect_category, file_marker, matches_query
+
+    test_aliases = [{
+        "from": "The Traitors (CZ)",
+        "to": "Zrd-CZ",
+        "category": "tv",
+        "regex": r"^Zrd[-_ ]*CZ",
+    }]
+    monkeypatch.setattr(settings, "aliases", test_aliases)
+    monkeypatch.setattr(settings, "tmdb_token", "")
+
+    file_name = "Zrd-CZ 1 série.rar"
+    titles = ["The Traitors (CZ)", "Zrd-CZ"]
+    assert matches_query(titles, file_name)
+    assert file_marker(titles, file_name) == (1, None)
+    assert _detect_category(file_name) == "5000"
+
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("zrd_s1", file_name, 8_000_000_000),
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "q": "The Traitors (CZ)", "season": "1", "apikey": "testkey",
+    })
+    assert resp.status_code == 200
+    items = ET.fromstring(resp.content).findall("channel/item")
+    assert len(items) == 1
+    assert "S01" in items[0].findtext("title")
+    cat_attr = items[0].find(f"{NZNS}attr[@name='category']")
+    assert cat_attr is not None
+    assert cat_attr.get("value") == "5000"
+
 
 
 

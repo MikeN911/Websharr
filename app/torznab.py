@@ -237,7 +237,14 @@ def build_queries(t: str, q: str, season: str | None, ep: str | None) -> list[st
                 # for later seasons it would collide with other episodes.
                 variants.append(f"{q} {e:02d}")
             return variants
-        return [f"{q} S{s:02d}", f"{q}S{s:02d}"]
+        return [
+            f"{q} S{s:02d}",
+            f"{q}S{s:02d}",
+            f"{q} {s} serie",
+            f"{q} {s}. serie",
+            f"{q} serie {s}",
+            f"{q} {s} sezona",
+        ]
     return [q]
 
 
@@ -590,6 +597,12 @@ def parse_alias_marker(name: str, aliases: list[dict]) -> tuple[int | None, int 
                 except (ValueError, TypeError):
                     pass
             elif len(groups) == 1:
+                rx_lower = rx.lower()
+                if any(w in rx_lower for w in ("season", "serie", "seria", "sezon", r"\bs\b", "s(")):
+                    try:
+                        return int(groups[0]), None
+                    except (ValueError, TypeError):
+                        pass
                 try:
                     return None, int(groups[0])
                 except (ValueError, TypeError):
@@ -701,9 +714,11 @@ def file_marker(query, name: str) -> tuple[int | None, int | None]:
             m_s = re.match(r"^s(\d{1,2})$", tk)
             if m_s:
                 return int(m_s.group(1)), None
-            if tk in ("season", "serie", "seria") and i + 1 < len(tail):
+            if tk in ("season", "serie", "seria", "sezona") and i + 1 < len(tail):
                 if tail[i + 1].isdigit():
                     return int(tail[i + 1]), None
+            if tk.isdigit() and i + 1 < len(tail) and tail[i + 1] in ("season", "serie", "seria", "sezona"):
+                return int(tk), None
             if tk.isdigit() and len(tk) <= 2:  # bare episode number (skip years/1080)
                 return (0 if is_special else None), int(tk)
         return None, None
