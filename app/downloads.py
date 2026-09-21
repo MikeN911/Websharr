@@ -269,6 +269,45 @@ class DownloadManager:
         logger.info("Resumed %s (%s)", nzo_id, job.name)
         return True
 
+    def set_category(self, nzo_id: str, new_category: str) -> bool:
+        """Change the category of a queued, downloading, paused, or completed job.
+
+        If the job is already completed and its storage folder exists, move the
+        folder into the new category directory and update job.storage.
+        """
+        job = self._jobs.get(nzo_id)
+        if job is None:
+            return False
+        new_category = (new_category or "*").strip()
+        if job.category == new_category:
+            return True
+
+        old_category = job.category
+        job.category = new_category
+
+        if job.status == "completed" and job.storage:
+            old_dir = Path(job.storage)
+            new_parent = self._complete_dir / new_category
+            new_parent.mkdir(parents=True, exist_ok=True)
+            new_dir = new_parent / job.job_name
+            if old_dir.exists() and old_dir != new_dir:
+                try:
+                    if new_dir.exists():
+                        # If destination folder already exists, move contents
+                        for item in old_dir.iterdir():
+                            shutil.move(str(item), str(new_dir / item.name))
+                        shutil.rmtree(old_dir, ignore_errors=True)
+                    else:
+                        shutil.move(str(old_dir), str(new_dir))
+                    job.storage = str(new_dir)
+                    logger.info("Moved storage for %s from %s to %s", job.nzo_id, old_dir, new_dir)
+                except OSError as exc:
+                    logger.warning("Could not move storage from %s to %s: %s", old_dir, new_dir, exc)
+
+        self._save_state()
+        logger.info("Changed category for %s: %s -> %s", job.nzo_id, old_category, new_category)
+        return True
+
     def history_jobs(self, include_hidden: bool = True) -> list[Job]:
         """Completed/failed jobs, newest first. `include_hidden=False` drops the
         ones Sonarr already removed from its own history (the SABnzbd view)."""

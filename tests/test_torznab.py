@@ -15,12 +15,14 @@ NZNS = "{http://www.newznab.com/DTD/2010/feeds/attributes/}"
 
 
 def test_build_queries():
-    # Season 1 adds a bare-episode-number variant for CZ "Series 01" naming.
+    # Season 1 adds a bare-episode-number variant for CZ "Series 01" naming,
+    # plus compact variants for releases without spaces (e.g. ZRDs03e01).
     assert build_queries("tvsearch", "Zaklinac", "1", "5") == \
-        ["Zaklinac S01E05", "Zaklinac 1x05", "Zaklinac 05"]
+        ["Zaklinac S01E05", "Zaklinac 1x05", "ZaklinacS01E05", "Zaklinac1x05", "Zaklinac 05"]
     # Later seasons omit the bare number (would collide across seasons).
-    assert build_queries("tvsearch", "Zaklinac", "2", "5") == ["Zaklinac S02E05", "Zaklinac 2x05"]
-    assert build_queries("tvsearch", "Zaklinac", "2", None) == ["Zaklinac S02"]
+    assert build_queries("tvsearch", "Zaklinac", "2", "5") == \
+        ["Zaklinac S02E05", "Zaklinac 2x05", "ZaklinacS02E05", "Zaklinac2x05"]
+    assert build_queries("tvsearch", "Zaklinac", "2", None) == ["Zaklinac S02", "ZaklinacS02"]
     assert build_queries("movie", "Vlny 2024", None, None) == ["Vlny 2024"]
     assert build_queries("search", "  ", None, None) == []
 
@@ -75,6 +77,19 @@ def test_alias_titles_and_multi_title_matching():
     assert not matches_query(["The Sleepers"], "Bez.vedomi.S01E01.2019.CZ.mkv")
     # Episode detected after the matched (Czech) title.
     assert file_episode(titles, "Bez.vedomi.S01E01.2019.CZ.mkv") == 1
+
+    # Compact alias matching (e.g. user example: Zrádci -> ZRDs03e01.rar)
+    zradci_aliases = [{"from": "Zrádci", "to": "ZRD"}]
+    assert alias_titles("Zrádci", zradci_aliases) == ["ZRD"]
+    z_titles = ["Zrádci"] + alias_titles("Zrádci", zradci_aliases)
+    assert matches_query(z_titles, "ZRDs03e01.rar")
+    assert matches_query(z_titles, "ZRD 03x01.rar")
+    assert matches_query(z_titles, "ZRD.S03E01.FHD.mkv")
+    assert file_episode(z_titles, "ZRDs03e01.rar") == 1
+    assert file_episode(z_titles, "ZRD 03x02.rar") == 2
+    from app.torznab import file_marker
+    assert file_marker(z_titles, "ZRDs03e01.rar") == (3, 1)
+    assert file_marker(z_titles, "ZRD 03x02.rar") == (3, 2)
 
 
 def test_expand_titles_uses_tmdb(monkeypatch):

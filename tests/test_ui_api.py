@@ -71,7 +71,9 @@ def test_ui_search_returns_json(client, fake_webshare):
     ]
     body = _ui(client, "search", q="Zaklinac", t="tvsearch", season="1", ep="5").json()
 
-    assert body["queries"] == ["Zaklinac S01E05", "Zaklinac 1x05", "Zaklinac 05"]
+    assert body["queries"] == [
+        "Zaklinac S01E05", "Zaklinac 1x05", "ZaklinacS01E05", "Zaklinac1x05", "Zaklinac 05",
+    ]
     results = body["results"]
     # txt and password-protected filtered out; sorted by size desc
     assert [r["ident"] for r in results] == ["id2", "id1"]
@@ -223,4 +225,21 @@ def test_ui_search_music_and_books(client, fake_webshare):
     resp_games = _ui(client, "search", q="Diablo", t="games").json()
     assert [r["ident"] for r in resp_games["results"]] == ["g1"]
     assert resp_games["results"][0]["format"] == "iso"
+
+
+def test_ui_job_category(client, fake_webshare):
+    fake_webshare.results = [SearchResult("cat_id", "Some.Title.2024.mkv", 5000)]
+    res = _ui(client, "search", q="Some Title", t="movie").json()["results"][0]
+    add_resp = client.post("/sabnzbd/api", params={
+        "mode": "addurl", "apikey": "testkey", "name": res["nzb_url"], "cat": "movies",
+    }).json()
+    nzo_id = add_resp["nzo_ids"][0]
+
+    # Change category via UI endpoint
+    resp = client.post("/ui/api/job/category", params={"apikey": "testkey"}, json={
+        "nzo_id": nzo_id, "category": "tv",
+    })
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert resp.json()["category"] == "tv"
 

@@ -381,6 +381,22 @@ async def ui_queue_reorder(request: Request):
     return {"ok": True}
 
 
+@router.post("/ui/api/job/category")
+async def ui_job_category(request: Request):
+    """Change the category of a queue or history job."""
+    if not _authorized(request):
+        return _unauthorized()
+    body = await request.json()
+    nzo_id = body.get("nzo_id", "")
+    category = body.get("category", "")
+    manager: DownloadManager = request.app.state.downloads
+    job = manager.get(nzo_id)
+    if job is None:
+        return JSONResponse({"error": "Job not found"}, status_code=404)
+    ok = manager.set_category(nzo_id, category)
+    return {"ok": ok, "category": job.category, "storage": job.storage}
+
+
 @router.get("/ui/api/history")
 async def ui_history(request: Request):
     if not _authorized(request):

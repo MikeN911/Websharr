@@ -362,3 +362,41 @@ def test_auto_unpack_zip_download(tmp_path, monkeypatch):
     finally:
         httpd.shutdown()
 
+
+def test_set_category_queued_and_completed(tmp_path, monkeypatch):
+    httpd, _ = _serve(PAYLOAD, support_range=True)
+    try:
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/f.mkv"
+        with _start_app(tmp_path, monkeypatch, url) as client:
+            nzb = build_nzb("c1", "Test.Movie.mkv", len(PAYLOAD))
+            resp = client.post(
+                "/sabnzbd/api",
+                params={"mode": "addfile", "apikey": "testkey", "cat": "tv"},
+                files={"nzbfile": ("Test Movie.nzb", nzb.encode(), "application/x-nzb")},
+            )
+            nzo_id = resp.json()["nzo_ids"][0]
+            manager = app.state.downloads
+            # 1. Test changing category of job
+            job = manager.get(nzo_id)
+            assert job.category == "tv"
+            assert manager.set_category(nzo_id, "movies") is True
+            assert job.category == "movies"
+
+            # Wait for it to complete
+            assert wait_for(lambda: (j := manager.get(nzo_id)) and j.status == "completed")
+            job = manager.get(nzo_id)
+            storage_path = Path(job.storage)
+            assert storage_path.exists()
+            assert "movies" in storage_path.parts
+
+            # 2. Test changing category of a completed job (moves directory on disk)
+            assert manager.set_category(nzo_id, "tv") is True
+            assert job.category == "tv"
+            new_storage = Path(job.storage)
+            assert new_storage.exists()
+            assert not storage_path.exists()
+            assert "tv" in new_storage.parts
+            assert (new_storage / "Test.Movie.mkv").read_bytes() == PAYLOAD
+    finally:
+        httpd.shutdown()
+

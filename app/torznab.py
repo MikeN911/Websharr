@@ -222,16 +222,22 @@ def build_queries(t: str, q: str, season: str | None, ep: str | None) -> list[st
             try:
                 e = int(ep)
             except ValueError:
-                return [f"{q} S{s:02d}"]
-            # Several naming conventions live on Webshare: S01E02, 1x02, and —
-            # common for CZ uploads — a bare episode number ("Series 01 - Title").
-            variants = [f"{q} S{s:02d}E{e:02d}", f"{q} {s}x{e:02d}"]
+                return [f"{q} S{s:02d}", f"{q}S{s:02d}"]
+            # Several naming conventions live on Webshare: S01E02, 1x02, compact
+            # variants like ZRDs03e01, and — common for CZ uploads — a bare
+            # episode number ("Series 01 - Title").
+            variants = [
+                f"{q} S{s:02d}E{e:02d}",
+                f"{q} {s}x{e:02d}",
+                f"{q}S{s:02d}E{e:02d}",
+                f"{q}{s}x{e:02d}",
+            ]
             if s == 1:
                 # Only for season 1, where a bare "01" is unambiguous enough;
                 # for later seasons it would collide with other episodes.
                 variants.append(f"{q} {e:02d}")
             return variants
-        return [f"{q} S{s:02d}"]
+        return [f"{q} S{s:02d}", f"{q}S{s:02d}"]
     return [q]
 
 
@@ -450,6 +456,43 @@ def year_conflict(name: str, year: int) -> bool:
     return bool(years) and all(abs(y - year) > 1 for y in years)
 
 
+def _match_series_prefix(title_tokens: list[str], name_tokens: list[str]) -> tuple[bool, list[str]]:
+    """Check if name_tokens starts with title_tokens.
+
+    Supports both separated tokens ('zrd', 's03e01') and compact tokens
+    where the last title token is glued to an episode/season marker (e.g. 'zrds03e01').
+    Returns (matches, tail_tokens).
+    """
+    if not title_tokens:
+        return True, name_tokens
+    if not name_tokens:
+        return False, []
+
+    # 1. Exact tokens prefix match
+    if len(name_tokens) >= len(title_tokens) and name_tokens[:len(title_tokens)] == title_tokens:
+        return True, name_tokens[len(title_tokens):]
+
+    # 2. Compact match on the last token (e.g. title="zrd", name="zrds03e01" -> first token="zrds03e01")
+    if len(title_tokens) > 1:
+        if name_tokens[:len(title_tokens) - 1] != title_tokens[:-1]:
+            return False, []
+        lead_idx = len(title_tokens) - 1
+    else:
+        lead_idx = 0
+
+    if lead_idx < len(name_tokens):
+        cand = name_tokens[lead_idx]
+        target = title_tokens[-1]
+        if cand.startswith(target):
+            rest = cand[len(target):]
+            # rest should look like an episode/season marker: s03e01, s03, 3x01, 01, etc.
+            if re.match(r"^(s\d{1,2}(?:e\d{1,3})?|\d{1,2}x\d{1,3}|\d{1,2})$", rest, re.I):
+                tail = [rest] + name_tokens[lead_idx + 1:]
+                return True, tail
+
+    return False, []
+
+
 def matches_query(query, name: str) -> bool:
     """True when the file name *starts with* the title words of the query (or of
     any of its alias titles, when a list is passed).
@@ -463,9 +506,8 @@ def matches_query(query, name: str) -> bool:
     ntoks = normalize_text(name).split()
     for title in _as_titles(query):
         tokens = _series_tokens(title)
-        if not tokens:
-            return True
-        if ntoks[:len(tokens)] == tokens:
+        matched, _ = _match_series_prefix(tokens, ntoks)
+        if matched:
             return True
     return False
 
@@ -512,10 +554,11 @@ def file_marker(query, name: str) -> tuple[int | None, int | None]:
     ntoks = normalize_text(name).split()
     for title in _as_titles(query):
         series = _series_tokens(title)
-        if series and ntoks[:len(series)] != series:
+        matched, tail = _match_series_prefix(series, ntoks)
+        if not matched:
             continue  # this title isn't the one the file starts with
+
         is_special = False
-        tail = ntoks[len(series):]
         for i, tk in enumerate(tail):
             if tk in ("special", "specials"):
                 is_special = True
@@ -531,7 +574,7 @@ def file_marker(query, name: str) -> tuple[int | None, int | None]:
                     return int(tail[i + 1]), None
             if tk.isdigit() and len(tk) <= 2:  # bare episode number (skip years/1080)
                 return (0 if is_special else None), int(tk)
-        break
+        return None, None
     return None, None
 
 

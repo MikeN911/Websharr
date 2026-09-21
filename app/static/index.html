@@ -163,6 +163,12 @@
   /* shared bits */
   .chip { background: rgba(var(--accent-rgb),0.1); color: var(--accent-hover); font-size: 11px; font-weight: 800;
     letter-spacing: .6px; text-transform: uppercase; border-radius: 5px; padding: 3px 8px; flex-shrink: 0; }
+  .chip-select { background: rgba(var(--accent-rgb),0.1); color: var(--accent-hover); font-size: 11px; font-weight: 800;
+    letter-spacing: .6px; text-transform: uppercase; border-radius: 5px; padding: 2px 6px; border: 1px solid rgba(var(--accent-rgb),0.25);
+    cursor: pointer; outline: none; -webkit-appearance: none; appearance: none;
+    background-repeat: no-repeat; background-position: right 4px center; }
+  .chip-select:hover { border-color: var(--accent); background-color: rgba(var(--accent-rgb),0.2); }
+  .chip-select option { background: var(--panel); color: var(--text); font-weight: 700; text-transform: none; }
   .pill { font-size: 11px; font-weight: 800; letter-spacing: .7px; border-radius: 5px; padding: 3px 8px; flex-shrink: 0; }
   .pill.downloading { background: rgba(var(--accent-rgb),0.14); color: var(--accent); }
   .pill.queued { background: rgba(var(--grey-rgb),0.14); color: var(--grey); }
@@ -362,11 +368,12 @@
   .gtype .gt { background: var(--inner); border: none; color: var(--muted); font-weight: 700;
     font-size: 12.5px; padding: 6px 14px; cursor: pointer; }
   .gtype .gt.active { background: var(--accent); color: var(--primary-text); }
-  .gform input { background: var(--inner); border: 1px solid var(--border); border-radius: 7px;
+  .gform input, .gform select { background: var(--inner); border: 1px solid var(--border); border-radius: 7px;
     padding: 6px 10px; color: var(--text); font-weight: 600; outline: none; }
-  .gform input:focus { border-color: var(--accent); }
+  .gform input:focus, .gform select:focus { border-color: var(--accent); }
   .gform .g-series, .gform .g-title { flex: 1; min-width: 140px; }
   .gform .g-season, .gform .g-ep, .gform .g-year { width: 92px; }
+  .gform .g-cat-select { font-size: 13px; font-weight: 700; cursor: pointer; }
   .gform .spacer { flex: 1; }
   @media (max-width: 640px) {
     .gform .g-series, .gform .g-title { flex: 1 1 100%; min-width: 0; }
@@ -974,6 +981,15 @@ function clockTime(ts) {
   return new Date(ts * 1000).toLocaleTimeString([], { hour12: false });
 }
 // Friendly label for the internal category values Sonarr/SABnzbd use.
+const CAT_OPTIONS = [
+  { value: "tv", label: "shows" },
+  { value: "movies", label: "movies" },
+  { value: "music", label: "music" },
+  { value: "books", label: "books" },
+  { value: "games", label: "games" },
+  { value: "*", label: "other" },
+];
+
 function catLabel(c) {
   if (c === "*") return "other";
   if (c === "tv") return "shows";
@@ -982,6 +998,14 @@ function catLabel(c) {
   if (c === "books") return "books";
   if (c === "games") return "games";
   return c;
+}
+
+function renderCatSelect(currentCat, extraClass = "") {
+  const cur = currentCat || "*";
+  return `<select class="chip-select ${extraClass}">` +
+    CAT_OPTIONS.map((o) =>
+      `<option value="${o.value}" ${o.value === cur ? "selected" : ""}>${o.label}</option>`
+    ).join("") + `</select>`;
 }
 // The queue card the dragged one should be inserted before, based on cursor Y
 // (the first card whose vertical midpoint is below the pointer).
@@ -1301,7 +1325,27 @@ const App = {
           ? `<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2v8m-3-3 3 3 3-3M3 13h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`
           : `<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.5"/><path d="M8 5v3.5l2 1.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
       card.querySelector(".qname").textContent = j.name;
-      card.querySelector(".chip").textContent = catLabel(j.category);
+      const chipEl = card.querySelector(".chip");
+      if (chipEl) {
+        chipEl.outerHTML = renderCatSelect(j.category, "q-cat-sel");
+        const sel = card.querySelector(".q-cat-sel");
+        sel.onchange = async () => {
+          const newCat = sel.value;
+          sel.disabled = true;
+          try {
+            await uiPost("job/category", { nzo_id: j.nzo_id, category: newCat });
+            j.category = newCat;
+          } catch (e) {
+            alert("Failed to change category: " + e.message);
+          } finally {
+            sel.disabled = false;
+            this.refresh(true);
+          }
+        };
+      } else {
+        const sel = card.querySelector(".q-cat-sel");
+        if (sel && document.activeElement !== sel) sel.value = j.category || "*";
+      }
       card.querySelector(".size").textContent = fmtSize(j.size);
       const pbtn = card.querySelector(".pausebtn");
       pbtn.innerHTML = paused
@@ -1468,7 +1512,7 @@ const App = {
           ${failed ? `<span class="herr">${esc(j.error)}</span>`
                    : `<span class="hpath">${esc(j.storage)}</span>`}
         </div>
-        <span class="chip">${esc(catLabel(j.category))}</span>
+        ${renderCatSelect(j.category, "h-cat-sel")}
         <span class="size">${fmtSize(j.size)}</span>
         <span class="htime" title="${new Date(j.completed_ts * 1000).toLocaleString()}">${relTime(j.completed_ts)}</span>
         <div class="hactions">
@@ -1480,6 +1524,25 @@ const App = {
 
     for (const row of $("history-list").children) {
       const id = row.dataset.id;
+      const sel = row.querySelector(".h-cat-sel");
+      if (sel) {
+        sel.onchange = async () => {
+          const newCat = sel.value;
+          sel.disabled = true;
+          try {
+            const res = await uiPost("job/category", { nzo_id: id, category: newCat });
+            if (res.storage) {
+              const pathEl = row.querySelector(".hpath");
+              if (pathEl) pathEl.textContent = res.storage;
+            }
+          } catch (e) {
+            alert("Failed to change category: " + e.message);
+          } finally {
+            sel.disabled = false;
+            this.refresh(true);
+          }
+        };
+      }
       row.querySelector('[data-act="del"]').onclick = async () => {
         await uiPost("history/delete", { nzo_id: id }).catch(() => {});
         this.refresh(true);
@@ -1583,71 +1646,94 @@ const App = {
 
   grabClick(r, i, btn) {
     const t = this.lastSearch.t;
-    // If the release already parses (filename has SxxEyy / a year, or the
-    // search itself supplied season+ep, or non-video type), grab straight away.
-    if (this.parseable(r.release, t) || this.parseable(r.name, t)) {
-      const cat = t === "movie" ? "movies" : t === "tvsearch" ? "tv" : t === "music" ? "music" : t === "book" ? "books" : t === "games" ? "games" : "*";
-      this.doGrab(r, r.release, cat, btn);
-    } else {
-      this.openGrabForm(r, i);
-    }
+    const defaultCat = t === "movie" ? "movies" : t === "tvsearch" ? "tv" : t === "music" ? "music" : t === "book" ? "books" : t === "games" ? "games" : "*";
+    this.openGrabForm(r, i, defaultCat);
   },
 
-  openGrabForm(r, i) {
+  openGrabForm(r, i, defaultCat = "tv") {
     const slot = $("search-results").querySelector(`[data-slot="${i}"]`);
     if (slot.firstChild) { slot.innerHTML = ""; return; }  // toggle off
-    const isMovie = this.lastSearch.t === "movie";
+    const isMovie = defaultCat === "movies" || this.lastSearch.t === "movie";
+    const isTv = defaultCat === "tv" || this.lastSearch.t === "tvsearch";
     const q = esc(this.lastSearch.q);
     const season = ($("season") && $("season").value) || "1";
     const ep = ($("ep") && $("ep").value) || guessEpisode(r.name, this.lastSearch.q);
+    const hasSxxEyy = /s\d{1,2}\s*e\d{1,2}/i.test(r.release || r.name) || /\b\d{1,2}x\d{2}\b/i.test(r.release || r.name);
     slot.innerHTML = `
       <div class="gform">
-        <span class="ghdr">This file has no season/episode in its name — tell Sonarr/Radarr what it is:</span>
-        <div class="gtype">
-          <button class="gt ${isMovie ? "" : "active"}" data-gt="tv">Shows</button>
-          <button class="gt ${isMovie ? "active" : ""}" data-gt="movie">Movies</button>
+        <span class="ghdr">Download configuration — category & release name:</span>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:12px;font-weight:700;color:var(--muted)">Category:</span>
+          ${renderCatSelect(defaultCat, "g-cat-select")}
         </div>
-        <div class="gfields tv" ${isMovie ? 'style="display:none"' : ""}>
+        <div class="gtype" style="${isTv || isMovie ? "" : 'display:none'}">
+          <button class="gt ${isTv ? "active" : ""}" data-gt="tv">Shows</button>
+          <button class="gt ${isMovie && !isTv ? "active" : ""}" data-gt="movie">Movies</button>
+        </div>
+        <div class="gfields tv" style="${isTv ? "" : 'display:none'}">
           <input class="g-series" placeholder="Series" value="${q}">
           <input class="g-season" type="number" min="0" placeholder="Season" value="${esc(season)}">
           <input class="g-ep" type="number" min="0" placeholder="Episode" value="${esc(ep)}">
         </div>
-        <div class="gfields movie" ${isMovie ? "" : 'style="display:none"'}>
+        <div class="gfields movie" style="${isMovie && !isTv ? "" : 'display:none'}">
           <input class="g-title" placeholder="Title" value="${q}">
           <input class="g-year" type="number" min="1900" placeholder="Year">
         </div>
         <span class="spacer"></span>
-        <button class="primary g-go">Grab</button>
+        <button class="primary g-go">Download</button>
         <button class="ghost g-cancel">Cancel</button>
       </div>`;
     const gform = slot.querySelector(".gform");
-    let mode = isMovie ? "movie" : "tv";
+    const catSel = gform.querySelector(".g-cat-select");
+    let mode = isMovie && !isTv ? "movie" : "tv";
+
+    catSel.onchange = () => {
+      const c = catSel.value;
+      if (c === "movies") {
+        mode = "movie";
+        gform.querySelector(".gtype").style.display = "";
+        gform.querySelectorAll(".gt").forEach((x) => x.classList.toggle("active", x.dataset.gt === "movie"));
+        gform.querySelector(".gfields.tv").style.display = "none";
+        gform.querySelector(".gfields.movie").style.display = "";
+      } else if (c === "tv") {
+        mode = "tv";
+        gform.querySelector(".gtype").style.display = "";
+        gform.querySelectorAll(".gt").forEach((x) => x.classList.toggle("active", x.dataset.gt === "tv"));
+        gform.querySelector(".gfields.tv").style.display = "";
+        gform.querySelector(".gfields.movie").style.display = "none";
+      } else {
+        gform.querySelector(".gtype").style.display = "none";
+        gform.querySelector(".gfields.tv").style.display = "none";
+        gform.querySelector(".gfields.movie").style.display = "none";
+      }
+    };
+
     gform.querySelectorAll(".gt").forEach((b) => b.onclick = () => {
       mode = b.dataset.gt;
       gform.querySelectorAll(".gt").forEach((x) => x.classList.toggle("active", x === b));
       gform.querySelector(".gfields.tv").style.display = mode === "tv" ? "" : "none";
       gform.querySelector(".gfields.movie").style.display = mode === "movie" ? "" : "none";
+      catSel.value = mode === "movie" ? "movies" : "tv";
     });
     gform.querySelector(".g-cancel").onclick = () => { slot.innerHTML = ""; };
     gform.querySelector(".g-go").onclick = () => {
-      let nzbname, cat;
+      let nzbname = r.release;
+      const chosenCat = catSel.value;
       const stem = r.title;
-      if (mode === "movie") {
+      if (chosenCat === "movies" && !/\b(19|20)\d{2}\b/.test(nzbname)) {
         const title = gform.querySelector(".g-title").value.trim();
         const year = gform.querySelector(".g-year").value.trim();
-        if (!title || !year) return;
-        nzbname = `${title} (${year}) - ${stem}`;
-        cat = "movies";
-      } else {
+        if (title && year) nzbname = `${title} (${year}) - ${stem}`;
+      } else if (chosenCat === "tv" && !hasSxxEyy) {
         const s = gform.querySelector(".g-series").value.trim();
         const se = parseInt(gform.querySelector(".g-season").value, 10);
         const ee = parseInt(gform.querySelector(".g-ep").value, 10);
-        if (!s || isNaN(se) || isNaN(ee)) return;
-        const pad = (n) => String(n).padStart(2, "0");
-        nzbname = `${s} S${pad(se)}E${pad(ee)} - ${stem}`;
-        cat = "tv";
+        if (s && !isNaN(se) && !isNaN(ee)) {
+          const pad = (n) => String(n).padStart(2, "0");
+          nzbname = `${s} S${pad(se)}E${pad(ee)} - ${stem}`;
+        }
       }
-      this.doGrab(r, nzbname, cat, gform.querySelector(".g-go"), slot);
+      this.doGrab(r, nzbname, chosenCat, gform.querySelector(".g-go"), slot);
     };
   },
 
