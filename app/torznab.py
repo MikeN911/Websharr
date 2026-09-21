@@ -622,24 +622,31 @@ def matches_query(query, name: str) -> bool:
     """
     name_clean = name.strip()
     titles = _as_titles(query)
-    # Check if an alias matches via regex
+    aliases = getattr(settings, "aliases", [])
+
+    # 1. Check alias regex matches
+    regex_governed_titles = set()
     for title in titles:
         tk = _title_key(title)
-        for a in getattr(settings, "aliases", []):
+        for a in aliases:
             rx = (a.get("regex") or "").strip()
-            if not rx:
-                continue
             fk = _title_key(a.get("from", ""))
             to_title = _title_key(a.get("to", ""))
-            if (fk and (fk in tk or tk in fk)) or (to_title and (to_title in tk or tk in to_title)) or not (fk or to_title):
-                try:
-                    if re.search(rx, name_clean, re.IGNORECASE):
-                        return True
-                except re.error:
-                    pass
+            if (fk and (fk in tk or tk == fk)) or (to_title and tk == to_title):
+                if rx:
+                    regex_governed_titles.add(to_title or fk)
+                    try:
+                        if re.search(rx, name_clean, re.IGNORECASE):
+                            return True
+                    except re.error:
+                        pass
 
+    # 2. Check title prefix match (only for titles not restricted by an unmet alias regex)
     ntoks = normalize_text(name).split()
     for title in titles:
+        tk = _title_key(title)
+        if tk in regex_governed_titles:
+            continue
         tokens = _series_tokens(title)
         matched, _ = _match_series_prefix(tokens, ntoks)
         if matched:

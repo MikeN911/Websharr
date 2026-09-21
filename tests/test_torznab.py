@@ -857,5 +857,53 @@ def test_alias_czech_season_pack_traitors(client, fake_webshare, monkeypatch):
     assert cat_attr.get("value") == "5000"
 
 
+def test_traitors_multi_country_separation(client, fake_webshare, monkeypatch):
+    """Aliases with specific regex patterns cleanly separate CZ, USA, and Canada
+    without prefix collisions."""
+    from app.settings import settings
+    from app.torznab import matches_query
+
+    test_aliases = [
+        {
+            "from": "The Traitors (CZ)",
+            "to": "ZRD",
+            "category": "tv",
+            "regex": r"^zrd(?:s\d{1,2}|[-_ ]*cz)",
+        },
+        {
+            "from": "The Traitors (US)",
+            "to": "Zrd-USA",
+            "category": "tv",
+            "regex": r"^zrd[-_ ]*usa",
+        },
+        {
+            "from": "The Traitors (CA)",
+            "to": "Zrd-Kanada",
+            "category": "tv",
+            "regex": r"^zrd[-_ ]*kanada",
+        },
+    ]
+    monkeypatch.setattr(settings, "aliases", test_aliases)
+
+    cz_titles = ["The Traitors (CZ)", "ZRD"]
+    us_titles = ["The Traitors (US)", "Zrd-USA"]
+    ca_titles = ["The Traitors (CA)", "Zrd-Kanada"]
+
+    # CZ query accepts Czech releases, rejects US/Canada
+    assert matches_query(cz_titles, "zrds03e01.rar") is True
+    assert matches_query(cz_titles, "Zrd-CZ 1 série.rar") is True
+    assert matches_query(cz_titles, "Zrd-USA-3. série CZ.rar") is False
+    assert matches_query(cz_titles, "Zrd-Kanada-1 série CZ.rar") is False
+
+    # US query accepts US release, rejects CZ
+    assert matches_query(us_titles, "Zrd-USA-3. série CZ.rar") is True
+    assert matches_query(us_titles, "zrds03e01.rar") is False
+
+    # Canada query accepts Canada release, rejects CZ
+    assert matches_query(ca_titles, "Zrd-Kanada-1 série CZ.rar") is True
+    assert matches_query(ca_titles, "zrds03e01.rar") is False
+
+
+
 
 
