@@ -503,10 +503,12 @@
   .theme-choice input:checked + .theme-shell .theme-name::after { content: "  ✓"; color: var(--accent); }
   .theme-desc { color: var(--faint); font-size: 11px; font-weight: 600; line-height: 1.25; }
   .aliasrow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-  .aliasrow input { flex: 1; min-width: 0; margin-top: 0; background: var(--inner);
+  .aliasrow input, .aliasrow select { flex: 1; min-width: 0; margin-top: 0; background: var(--inner);
     border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; color: var(--text);
     font-weight: 600; outline: none; }
-  .aliasrow input:focus { border-color: var(--accent); }
+  .aliasrow select { flex: 0 0 145px; cursor: pointer; }
+  .aliasrow input.a-regex { flex: 1.3; font-family: monospace; font-size: 12px; }
+  .aliasrow input:focus, .aliasrow select:focus { border-color: var(--accent); }
   .aliasrow .arrow { color: var(--faint); font-weight: 800; flex-shrink: 0; }
   @media (max-width: 860px) { .scard { grid-template-columns: 1fr; } }
   @media (max-width: 640px) {
@@ -520,7 +522,7 @@
     .theme-preview { grid-row: 1 / 3; height: 62px; }
 
     .aliasrow { flex-wrap: wrap; position: relative; padding-right: 40px; }
-    .aliasrow input { flex: 1 1 100%; }
+    .aliasrow input, .aliasrow select { flex: 1 1 100%; }
     .aliasrow .arrow { flex: 1 1 100%; padding-left: 2px; }
     .aliasrow .xbtn { position: absolute; top: 0; right: 0; min-width: 44px; min-height: 44px; }
   }
@@ -894,9 +896,9 @@
       <div class="sinfo">
         <h3>Search aliases</h3>
         <p class="shint">Manual override/supplement to the TMDB lookup. Map
-          <b>*arr title → Webshare (Czech) title</b> and Websharr also searches the
-          Czech name. Use this when TMDB has no Czech title or picks the wrong match.
-          Matching is loose — the series/movie name is enough.</p>
+          <b>*arr title → Webshare (Czech) title</b>, set an explicit <b>Category</b>
+          (e.g. Shows/TV 5000), and optionally specify a <b>Filename regex</b>
+          (e.g. <code>^ZRD[sS](\d{2})[eE](\d{2})\.rar$</code>) to match files and extract season/episode.</p>
       </div>
       <div class="sform">
         <div id="alias-rows"></div>
@@ -1204,13 +1206,25 @@ const App = {
   renderAliases(aliases) {
     const box = $("alias-rows");
     box.innerHTML = "";
-    const add = (a) => box.insertAdjacentHTML("beforeend", `
-      <div class="aliasrow">
-        <input class="a-from" placeholder="*arr title (e.g. The Sleepers)" value="${esc(a.from || "")}">
-        <span class="arrow">→</span>
-        <input class="a-to" placeholder="Webshare title (e.g. Bez vědomí)" value="${esc(a.to || "")}">
-        <button class="xbtn" title="Remove">✕</button>
-      </div>`);
+    const add = (a = {}) => {
+      const cat = (a.category || "").toLowerCase();
+      box.insertAdjacentHTML("beforeend", `
+        <div class="aliasrow">
+          <input class="a-from" placeholder="*arr title (e.g. Zrádci)" value="${esc(a.from || "")}">
+          <span class="arrow">→</span>
+          <input class="a-to" placeholder="Webshare title (e.g. ZRD)" value="${esc(a.to || "")}">
+          <select class="a-cat" title="Target category">
+            <option value="" ${!cat ? "selected" : ""}>Auto / Default</option>
+            <option value="tv" ${cat === "tv" || cat === "5000" ? "selected" : ""}>Shows (5000)</option>
+            <option value="movies" ${cat === "movies" || cat === "2000" ? "selected" : ""}>Movies (2000)</option>
+            <option value="music" ${cat === "music" || cat === "3000" ? "selected" : ""}>Music (3000)</option>
+            <option value="books" ${cat === "books" || cat === "7000" ? "selected" : ""}>Books (7000)</option>
+            <option value="games" ${cat === "games" || cat === "4000" ? "selected" : ""}>PC/Games (4000)</option>
+          </select>
+          <input class="a-regex" placeholder="Filename regex (e.g. ^ZRD[sS](\\d{2})[eE](\\d{2})\\.rar$)" value="${esc(a.regex || "")}">
+          <button class="xbtn" title="Remove">✕</button>
+        </div>`);
+    };
     (aliases.length ? aliases : []).forEach(add);
     box.querySelectorAll(".aliasrow .xbtn").forEach((b) =>
       b.onclick = () => b.closest(".aliasrow").remove());
@@ -1222,7 +1236,9 @@ const App = {
     const aliases = rows.map((r) => ({
       from: r.querySelector(".a-from").value.trim(),
       to: r.querySelector(".a-to").value.trim(),
-    })).filter((a) => a.from && a.to);
+      category: r.querySelector(".a-cat").value.trim(),
+      regex: r.querySelector(".a-regex").value.trim(),
+    })).filter((a) => (a.from && a.to) || a.regex);
     try {
       await uiPost("aliases", { aliases });
       sresult("alias-result", true, `✓ Saved ${aliases.length} alias${aliases.length === 1 ? "" : "es"}`);
@@ -1646,7 +1662,7 @@ const App = {
 
   grabClick(r, i, btn) {
     const t = this.lastSearch.t;
-    const defaultCat = t === "movie" ? "movies" : t === "tvsearch" ? "tv" : t === "music" ? "music" : t === "book" ? "books" : t === "games" ? "games" : "*";
+    const defaultCat = (r && r.category) || (t === "movie" ? "movies" : t === "tvsearch" ? "tv" : t === "music" ? "music" : t === "book" ? "books" : t === "games" ? "games" : "tv");
     this.openGrabForm(r, i, defaultCat);
   },
 
@@ -1871,7 +1887,7 @@ $("set-tmdb-save").onclick = async () => {
 $("alias-add").onclick = () => {
   const box = $("alias-rows");
   if (!box._add) App.renderAliases([]);
-  box._add({ from: "", to: "" });
+  box._add({ from: "", to: "", category: "", regex: "" });
   box.querySelectorAll(".aliasrow .xbtn").forEach((b) =>
     b.onclick = () => b.closest(".aliasrow").remove());
   const last = box.querySelector(".aliasrow:last-child .a-from");

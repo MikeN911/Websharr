@@ -29,16 +29,20 @@ from .downloads import DownloadManager, Job
 from .settings import SESSION_TTL, THEMES, hash_password, settings, verify_password
 from .torznab import (
     VIDEO_EXTENSIONS,
+    _detect_category,
     _is_allowed_file,
     _matches_anywhere,
+    alias_titles,
     build_queries,
     expand_titles,
     file_marker,
-    year_conflict,
+    get_alias_category,
     matches_query,
     parse_query,
     relevance,
     release_title,
+    to_ui_cat,
+    year_conflict,
 )
 from .webshare import SearchResult, WebshareError
 
@@ -199,15 +203,31 @@ def _parse_urls(value) -> list[str]:
 
 @router.post("/ui/api/aliases")
 async def ui_aliases_post(request: Request):
-    """Replace the search alias map (*arr title -> Webshare/CZ title)."""
+    """Replace the search alias map (*arr title -> Webshare/CZ title, category, regex)."""
     if not _authorized(request):
         return _unauthorized()
     body = await request.json()
     clean = []
     for a in body.get("aliases", []):
-        frm, to = (a.get("from") or "").strip(), (a.get("to") or "").strip()
-        if frm and to:
-            clean.append({"from": frm, "to": to})
+        frm = str(a.get("from") or "").strip()
+        to = str(a.get("to") or "").strip()
+        cat = str(a.get("category") or "").strip().lower()
+        rx = str(a.get("regex") or "").strip()
+        if (frm and to) or rx:
+            if rx:
+                try:
+                    re.compile(rx)
+                except re.error as exc:
+                    return JSONResponse(
+                        {"error": f"Invalid regex '{rx}': {exc}"},
+                        status_code=400,
+                    )
+            clean.append({
+                "from": frm,
+                "to": to,
+                "category": cat,
+                "regex": rx,
+            })
     settings.aliases = clean
     settings.save()
     return {"ok": True, "aliases": settings.aliases}
@@ -428,13 +448,15 @@ def _is_video(name: str) -> bool:
     return name.lower().endswith(VIDEO_EXTENSIONS)
 
 
-def _result_json(request: Request, r: SearchResult, release: str) -> dict:
+def _result_json(request: Request, r: SearchResult, release: str, category: str = "") -> dict:
     base = str(request.base_url).rstrip("/")
+    cat_param = f"&cat={urllib.parse.quote(category)}" if category else ""
     nzb_url = (
         f"{base}/torznab/nzb/{r.ident}"
         f"?apikey={config.api_key}"
         f"&name={urllib.parse.quote(r.name)}&size={r.size}"
         f"&nzbname={urllib.parse.quote(release)}"
+        f"{cat_param}"
     )
     return {
         "ident": r.ident,
@@ -442,6 +464,7 @@ def _result_json(request: Request, r: SearchResult, release: str) -> dict:
         "title": r.name.rsplit(".", 1)[0] if "." in r.name else r.name,
         # release name carrying SxxEyy (for tvsearch); sent as nzbname on grab.
         "release": release,
+        "category": category,
         "format": (r.type or (r.name.rsplit(".", 1)[-1] if "." in r.name else "")).lower(),
         "size": r.size,
         "positive_votes": r.positive_votes,
@@ -498,10 +521,11 @@ async def ui_search(request: Request):
     else:
         q = (params.get("q", "") or "").strip()
         season, ep = None, None
-        titles = [q] if q else []
+        alias_t = alias_titles(q, getattr(settings, "aliases", []))
+        titles = ([q] if q else []) + [x for x in alias_t if x not in ([q] if q else [])]
         display = q
         year = 0
-        queries = [q] if q else []
+        queries = list(titles)
 
     if not queries:
         return {"results": [], "queries": []}
@@ -534,7 +558,7 @@ async def ui_search(request: Request):
                     if want_season is not None and fs is not None and fs != want_season:
                         continue  # an S02E02 file is not the requested S01E02
             else:
-                if not _matches_anywhere(titles, r.name):
+                if not (matches_query(titles, r.name) or _matches_anywhere(titles, r.name)):
                     continue
             seen.add(r.ident)
             merged.append(r)
@@ -542,11 +566,29 @@ async def ui_search(request: Request):
     merged.sort(key=lambda r: (-relevance(queries, r.name), -r.size))
     rel_season = season if t == "tvsearch" else None
     rel_ep = ep if t == "tvsearch" else None
+    results_list = []
+    for r in merged[:limit]:
+        alias_cat = get_alias_category(r.name, getattr(settings, "aliases", []), query=display)
+        if alias_cat:
+            c = to_ui_cat(alias_cat)
+        elif t == "tvsearch" or re.search(r"[sS]\d{1,2}[eE]\d{1,3}|\b\d{1,2}x\d{2,3}\b", r.name):
+            c = "tv"
+        elif t == "movie":
+            c = "movies"
+        elif t in ("music", "audio"):
+            c = "music"
+        elif t in ("book", "books", "docs"):
+            c = "books"
+        elif t in ("games", "archives"):
+            c = "games"
+        else:
+            c = to_ui_cat(_detect_category(r.name))
+
+        rel_name = release_title(display, rel_season, rel_ep, r.name)
+        results_list.append(_result_json(request, r, rel_name, category=c))
+
     return {
-        "results": [
-            _result_json(request, r, release_title(display, rel_season, rel_ep, r.name))
-            for r in merged[:limit]
-        ],
+        "results": results_list,
         "queries": queries,
     }
 

@@ -782,3 +782,41 @@ def test_games_search_by_cat(client, fake_webshare):
     assert cat_attr.get("value") == "4000"
 
 
+def test_alias_regex_and_category_override(client, fake_webshare, monkeypatch):
+    """An alias with category='tv' and regex='^ZRD[sS](\\d{2})[eE](\\d{2})\\.rar$'
+    forces files matching the regex to be categorised as TV (5000) instead of
+    movies (2000) or PC/archives (4000), and extracts season/episode."""
+    from app.settings import settings
+    from app.torznab import _detect_category, file_marker, matches_query
+
+    test_aliases = [{
+        "from": "Zrádci",
+        "to": "ZRD",
+        "category": "tv",
+        "regex": r"^ZRD[sS](\d{2})[eE](\d{2})\.rar$",
+    }]
+    monkeypatch.setattr(settings, "aliases", test_aliases)
+    monkeypatch.setattr(settings, "tmdb_token", "")
+
+    # 1. Direct helper checks
+    assert matches_query(["Zrádci", "ZRD"], "ZRDs03e01.rar")
+    assert file_marker(["Zrádci", "ZRD"], "ZRDs03e01.rar") == (3, 1)
+    assert _detect_category("ZRDs03e01.rar") == "5000"
+
+    # 2. Torznab API check (even on general search query)
+    fake_webshare.results = [
+        SearchResult("zrd1", "ZRDs03e01.rar", 1_200_000_000),
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "search", "q": "Zrádci", "apikey": "testkey",
+    })
+    assert resp.status_code == 200
+    root = ET.fromstring(resp.content)
+    items = root.findall("channel/item")
+    assert len(items) == 1
+    cat_attr = items[0].find(f"{NZNS}attr[@name='category']")
+    assert cat_attr is not None
+    assert cat_attr.get("value") == "5000"
+
+
+

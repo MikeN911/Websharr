@@ -243,3 +243,42 @@ def test_ui_job_category(client, fake_webshare):
     assert resp.json()["ok"] is True
     assert resp.json()["category"] == "tv"
 
+
+def test_ui_aliases_category_and_regex(client, fake_webshare):
+    # 1. Valid regex and category
+    resp = client.post("/ui/api/aliases", params={"apikey": "testkey"}, json={
+        "aliases": [
+            {
+                "from": "Zrádci",
+                "to": "ZRD",
+                "category": "tv",
+                "regex": r"^ZRD[sS](\d{2})[eE](\d{2})\.rar$",
+            }
+        ]
+    })
+    assert resp.status_code == 200
+    aliases = resp.json()["aliases"]
+    assert len(aliases) == 1
+    assert aliases[0]["category"] == "tv"
+    assert aliases[0]["regex"] == r"^ZRD[sS](\d{2})[eE](\d{2})\.rar$"
+
+    # 2. Invalid regex returns 400
+    resp_invalid = client.post("/ui/api/aliases", params={"apikey": "testkey"}, json={
+        "aliases": [
+            {
+                "from": "Bad",
+                "to": "Regex",
+                "regex": "[invalid(regex",
+            }
+        ]
+    })
+    assert resp_invalid.status_code == 400
+    assert "Invalid regex" in resp_invalid.json()["error"]
+
+    # 3. ui_search uses alias category in result item
+    fake_webshare.results = [SearchResult("zrd_ui", "ZRDs03e01.rar", 800_000_000)]
+    search_res = _ui(client, "search", q="Zrádci", t="search").json()
+    assert len(search_res["results"]) == 1
+    assert search_res["results"][0]["category"] == "tv"
+
+

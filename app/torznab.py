@@ -493,9 +493,113 @@ def _match_series_prefix(title_tokens: list[str], name_tokens: list[str]) -> tup
     return False, []
 
 
+def to_torznab_cat(cat: str) -> str:
+    """Map human or UI category names to Newznab/Torznab category IDs."""
+    c = (cat or "").strip().lower()
+    if c in ("tv", "shows", "show", "series", CAT_TV):
+        return CAT_TV
+    if c in ("movie", "movies", CAT_MOVIES):
+        return CAT_MOVIES
+    if c in ("music", "audio", CAT_AUDIO):
+        return CAT_AUDIO
+    if c in ("book", "books", "docs", CAT_BOOKS):
+        return CAT_BOOKS
+    if c in ("game", "games", "pc", "archives", CAT_PC):
+        return CAT_PC
+    return ""
+
+
+def to_ui_cat(cat: str) -> str:
+    """Map Torznab category IDs or settings names to canonical UI category keys."""
+    c = (cat or "").strip().lower()
+    if c in (CAT_TV, "tv", "shows", "show", "series"):
+        return "tv"
+    if c in (CAT_MOVIES, "movie", "movies"):
+        return "movies"
+    if c in (CAT_AUDIO, "music", "audio"):
+        return "music"
+    if c in (CAT_BOOKS, "book", "books", "docs"):
+        return "books"
+    if c in (CAT_PC, "game", "games", "pc", "archives"):
+        return "games"
+    return c or "tv"
+
+
+def find_alias_match(name: str, aliases: list[dict], query: str | None = None) -> dict | None:
+    """Find the first alias matching the file name (via regex or title prefix/tokens)."""
+    if not aliases:
+        return None
+    name_clean = name.strip()
+    qk = _title_key(query) if query else ""
+    for a in aliases:
+        rx = (a.get("regex") or "").strip()
+        if rx:
+            try:
+                if re.search(rx, name_clean, re.IGNORECASE):
+                    return a
+            except re.error:
+                pass
+        to_title = (a.get("to") or "").strip()
+        from_title = (a.get("from") or "").strip()
+        if qk:
+            fk = _title_key(from_title)
+            if fk and (fk in qk or qk in fk):
+                if to_title and matches_query([to_title], name_clean):
+                    return a
+        if to_title and matches_query([to_title], name_clean):
+            return a
+        if from_title and matches_query([from_title], name_clean):
+            return a
+    return None
+
+
+def get_alias_category(name: str, aliases: list[dict], query: str | None = None) -> str | None:
+    """Return Torznab category (e.g. '5000', '2000') if file matches an alias with a category."""
+    matched = find_alias_match(name, aliases, query)
+    if matched and matched.get("category"):
+        cat = to_torznab_cat(matched["category"])
+        if cat:
+            return cat
+    return None
+
+
+def parse_alias_marker(name: str, aliases: list[dict]) -> tuple[int | None, int | None]:
+    """Extract (season, episode) from file name using alias regex capture groups if matched."""
+    name_clean = name.strip()
+    for a in aliases or []:
+        rx = (a.get("regex") or "").strip()
+        if not rx:
+            continue
+        try:
+            m = re.search(rx, name_clean, re.IGNORECASE)
+        except re.error:
+            continue
+        if m:
+            gd = m.groupdict()
+            s = gd.get("season")
+            e = gd.get("ep") or gd.get("episode")
+            if s is not None or e is not None:
+                return (
+                    int(s) if s and str(s).isdigit() else None,
+                    int(e) if e and str(e).isdigit() else None,
+                )
+            groups = m.groups()
+            if len(groups) >= 2:
+                try:
+                    return int(groups[0]), int(groups[1])
+                except (ValueError, TypeError):
+                    pass
+            elif len(groups) == 1:
+                try:
+                    return None, int(groups[0])
+                except (ValueError, TypeError):
+                    pass
+    return None, None
+
+
 def matches_query(query, name: str) -> bool:
     """True when the file name *starts with* the title words of the query (or of
-    any of its alias titles, when a list is passed).
+    any of its alias titles, when a list is passed), or matches an alias regex.
 
     Webshare's fulltext is loose — a "Skvrna S01E05" search also returns any
     file merely containing "S01E05"/"05" (WWE, football...), and for common-word
@@ -503,8 +607,26 @@ def matches_query(query, name: str) -> bool:
     keeps the right ones; multiple titles let a CZ alias ("Bez vědomí") match a
     query whose *arr title is English ("The Sleepers").
     """
+    name_clean = name.strip()
+    titles = _as_titles(query)
+    # Check if an alias matches via regex
+    for title in titles:
+        tk = _title_key(title)
+        for a in getattr(settings, "aliases", []):
+            rx = (a.get("regex") or "").strip()
+            if not rx:
+                continue
+            fk = _title_key(a.get("from", ""))
+            to_title = _title_key(a.get("to", ""))
+            if (fk and (fk in tk or tk in fk)) or (to_title and (to_title in tk or tk in to_title)) or not (fk or to_title):
+                try:
+                    if re.search(rx, name_clean, re.IGNORECASE):
+                        return True
+                except re.error:
+                    pass
+
     ntoks = normalize_text(name).split()
-    for title in _as_titles(query):
+    for title in titles:
         tokens = _series_tokens(title)
         matched, _ = _match_series_prefix(tokens, ntoks)
         if matched:
@@ -529,6 +651,11 @@ def _matches_anywhere(query, name: str) -> bool:
 
 
 def _detect_category(name: str, default: str = CAT_MOVIES) -> str:
+    alias_cat = get_alias_category(name, getattr(settings, "aliases", []))
+    if alias_cat:
+        return alias_cat
+    if re.search(r"[sS]\d{1,2}[eE]\d{1,3}|\b\d{1,2}x\d{2,3}\b", name):
+        return CAT_TV
     name_l = name.lower()
     if name_l.endswith(VIDEO_EXTENSIONS):
         return default if default in (CAT_MOVIES, CAT_TV) else CAT_MOVIES
@@ -542,8 +669,8 @@ def _detect_category(name: str, default: str = CAT_MOVIES) -> str:
 
 
 def file_marker(query, name: str) -> tuple[int | None, int | None]:
-    """(season, episode) implied by the file name, read from the first marker
-    after the (matched) show title: SxxEyy, 1x05, or a bare "05" (no season).
+    """(season, episode) implied by the file name, read from an alias regex or the
+    first marker after the (matched) show title: SxxEyy, 1x05, or a bare "05" (no season).
 
     Webshare fulltext is OR-based, so a "Skvrna 05" query returns every Skvrna
     episode — and a "DuckTales S01E02" query returns "DuckTales.S02E02..." too
@@ -551,6 +678,11 @@ def file_marker(query, name: str) -> tuple[int | None, int | None]:
     episode-only match let season-2 files impersonate season 1, and the
     release-name rewrite then hid the real season from *arr entirely.
     """
+    # 1. First check if an alias regex matches and extracts season / episode
+    as_season, as_ep = parse_alias_marker(name, getattr(settings, "aliases", []))
+    if as_season is not None or as_ep is not None:
+        return as_season, as_ep
+
     ntoks = normalize_text(name).split()
     for title in _as_titles(query):
         series = _series_tokens(title)
@@ -675,7 +807,15 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
         # the Czech dub title ("Kačeří příběhy ...") is a Czech release even
         # when it carries no "dabing" marker.
         item_lang = dub_language(r.name) or inferred or language
-        item_category = category if category not in ("", "all") else _detect_category(r.name)
+        alias_cat = get_alias_category(r.name, getattr(settings, "aliases", []), query=query)
+        if alias_cat:
+            item_category = alias_cat
+        elif re.search(r"[sS]\d{1,2}[eE]\d{1,3}|\b\d{1,2}x\d{2,3}\b", r.name):
+            item_category = CAT_TV
+        elif category not in ("", "all"):
+            item_category = category
+        else:
+            item_category = _detect_category(r.name)
         # Emit attrs in both namespaces so the feed parses whether Sonarr/Radarr
         # treats it as Newznab (usenet — the correct choice) or Torznab.
         for ns in (NEWZNAB_NS, TORZNAB_NS):
@@ -756,12 +896,13 @@ async def torznab_api(request: Request):
     else:
         q = (params.get("q", "") or "").strip()
         season, ep = None, None
-        titles = [q] if q else []
+        alias_t = alias_titles(q, getattr(settings, "aliases", []))
+        titles = ([q] if q else []) + [x for x in alias_t if x not in ([q] if q else [])]
         display = q
         language = ""
         czech_titles = []
         year = 0
-        queries = [q] if q else []
+        queries = list(titles)
 
     if not queries:
         # Webshare has no RSS/"latest" feed, but Sonarr/Radarr reject an indexer
@@ -820,7 +961,7 @@ async def torznab_api(request: Request):
                         else:
                             continue
             else:
-                if not _matches_anywhere(titles, r.name):
+                if not (matches_query(titles, r.name) or _matches_anywhere(titles, r.name)):
                     continue
             seen.add(r.ident)
             merged.append(r)

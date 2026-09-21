@@ -91,7 +91,16 @@ class Settings:
         self.api_key = data.get("api_key", "")
         self.secret = data.get("secret") or self.secret
         aliases = data.get("aliases", [])
-        self.aliases = [a for a in aliases if a.get("from") and a.get("to")]
+        self.aliases = [
+            {
+                "from": str(a.get("from", "")).strip(),
+                "to": str(a.get("to", "")).strip(),
+                "category": str(a.get("category", "")).strip().lower(),
+                "regex": str(a.get("regex", "")).strip(),
+            }
+            for a in aliases
+            if isinstance(a, dict) and ((a.get("from") and a.get("to")) or a.get("regex"))
+        ]
         self.tmdb_token = data.get("tmdb_token") or config.tmdb_token
         try:
             self.max_concurrent = max(1, int(data.get("max_concurrent") or config.max_concurrent))
