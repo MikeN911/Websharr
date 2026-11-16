@@ -136,3 +136,17 @@ def test_resolve_movie_uses_translation_title():
     client = _RoutedClient([], [{"iso_639_1": "cs", "data": {"title": "Vykoupení z věznice Shawshank"}}])
     assert asyncio.run(tmdb._resolve(client, entry, "movie"))[3] == \
         ("Vykoupení z věznice Shawshank",)
+
+
+def test_resolve_czech_origin_country_defaults_language_to_cs():
+    tv_entry = {"id": 100, "name": "Czech Made Show", "original_name": "Czech Made Show",
+                "original_language": "en", "origin_country": ["CZ"]}
+    client = _RoutedClient([], [{"iso_639_1": "cs", "data": {"name": "Český pořad"}}])
+    disp, orig, lang, czech, year = asyncio.run(tmdb._resolve(client, tv_entry, "tv"))
+    assert disp == "Czech Made Show" and lang == "cs" and czech == ("Český pořad",)
+
+    movie_entry = {"id": 101, "title": "Anthropoid", "original_title": "Anthropoid",
+                   "original_language": "en",
+                   "production_countries": [{"iso_3166_1": "CZ", "name": "Czech Republic"}]}
+    disp, orig, lang, czech, year = asyncio.run(tmdb._resolve(_Client([]), movie_entry, "movie"))
+    assert disp == "Anthropoid" and lang == "cs"

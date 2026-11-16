@@ -793,12 +793,14 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
         # so *arr doesn't reject the release as "Unknown" quality.
         if not _RES_RE.search(title) and heights.get(r.ident):
             title = f"{title} {heights[r.ident]}p"
-        # A dub recognised without a marker in its name — by its audio track, or
-        # by being named after the Czech title ("Cerveny trpaslik ...") — gets the
-        # marker added, so title-based custom formats ("CZ" in release title)
-        # see it too.
-        inferred = "" if dub_language(r.name) else audio.get(r.ident) or \
-            ("Czech" if czech_titles and matches_query(czech_titles, r.name) else "")
+        # A dub or Czech-origin release recognised without a marker in its name
+        # — by its audio track, by being named after the Czech title ("Cerveny
+        # trpaslik ..."), or by having Czech as the title's default/origin
+        # language — gets the marker added, so title-based custom formats ("CZ"
+        # in release title) see it too.
+        inferred = "" if dub_language(r.name) else audio.get(r.ident) or (
+            "Czech" if (language == "Czech" or (czech_titles and matches_query(czech_titles, r.name))) else ""
+        )
         marker, marker_re = ("SK", _SK_RE) if inferred == "Slovak" else ("CZ", _CZ_RE)
         if inferred and not marker_re.search(title):
             title = f"{title} {marker}"
@@ -850,6 +852,41 @@ def _render_feed(request: Request, results: list[SearchResult], category: str,
                               {"name": "language", "value": item_lang})
 
     return _xml_response(rss)
+
+
+def _rss_queries(ws_category: str) -> tuple[str, ...]:
+    """Extension keywords for Webshare RSS sync (Webshare returns 0 for empty `what`)."""
+    return {
+        "audio": ("mp3", "flac"),
+        "docs": ("epub", "pdf"),
+        "archives": ("rar", "zip"),
+    }.get(ws_category, ("mkv", "mp4"))
+
+
+async def _fetch_rss(client, ws_category: str, limit: int, offset: int) -> list[SearchResult]:
+    """Fetch recent uploads from Webshare and interleave them across container types."""
+    per_query: list[list[SearchResult]] = []
+    for rq in _rss_queries(ws_category):
+        try:
+            results = await client.search(rq, category="", limit=limit, offset=offset, sort="recent")
+        except (WebshareError, httpx.HTTPError) as exc:
+            logger.warning("RSS search '%s' failed: %s", rq, exc)
+            continue
+        per_query.append([
+            r for r in results
+            if not r.password and _is_allowed_file(r.name, ws_category)
+        ])
+    merged: list[SearchResult] = []
+    seen: set[str] = set()
+    max_len = max((len(lst) for lst in per_query), default=0)
+    for idx in range(max_len):
+        for lst in per_query:
+            if idx < len(lst):
+                r = lst[idx]
+                if r.ident not in seen:
+                    seen.add(r.ident)
+                    merged.append(r)
+    return merged
 
 
 @router.get("/torznab/api")
@@ -926,26 +963,35 @@ async def torznab_api(request: Request):
         year = 0
         queries = list(titles)
 
-    if not queries:
-        # Webshare has no RSS/"latest" feed, but Sonarr/Radarr reject an indexer
-        # whose capability-test query returns zero items ("no results in the
-        # configured categories"). Return one deliberately unparseable placeholder
-        # in the requested category so the test passes; the decision engine has no
-        # title to parse during RSS sync, so it is never grabbed.
-        cat = (params.get("cat", "") or "").split(",")[0].strip() or category
-        placeholder = SearchResult(
-            ident="websharr-online",
-            name="Websharr online - no automatic feed, use interactive search",
-            size=1,
-        )
-        return _render_feed(request, [placeholder], cat)
-
     limit = min(int(params.get("limit", str(config.search_limit)) or config.search_limit), 100)
     offset = int(params.get("offset", "0") or 0)
+    client = request.app.state.webshare
+
+    if not queries:
+        # RSS sync / capability test (no query and no IDs): fetch recent uploads
+        # from Webshare. If nothing is returned (e.g. unconfigured/empty),
+        # return one deliberately unparseable placeholder so Sonarr/Radarr's
+        # indexer test doesn't reject zero results.
+        merged = await _fetch_rss(client, ws_category, limit, offset)
+        if not merged:
+            cat = (params.get("cat", "") or "").split(",")[0].strip() or category
+            placeholder = SearchResult(
+                ident="websharr-online",
+                name="Websharr online - no automatic feed, use interactive search",
+                size=1,
+            )
+            return _render_feed(request, [placeholder], cat)
+        logger.info("Newznab %s RSS -> %d results", t, len(merged))
+        shown = merged[:limit]
+        if ws_category == "video":
+            heights, audio = await _probe(client, shown)
+        else:
+            heights, audio = {}, {}
+        return _render_feed(request, shown, category, heights=heights, audio=audio,
+                            query=display, language=language, czech_titles=czech_titles)
 
     want_ep = int(ep) if (t == "tvsearch" and ep and str(ep).isdigit()) else None
     want_season = int(season) if (t == "tvsearch" and season and str(season).isdigit()) else None
-    client = request.app.state.webshare
     seen: set[str] = set()
     merged: list[SearchResult] = []
     episodes: dict[str, int] = {}  # season search: each file's own episode number

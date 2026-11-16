@@ -51,6 +51,17 @@ def _language(entry: dict) -> str:
     return (entry.get("original_language") or "").strip().lower()
 
 
+def _is_czech_origin(entry: dict) -> bool:
+    """True when TMDB lists CZ in origin_country or production_countries."""
+    if any((c or "").strip().upper() == "CZ" for c in (entry.get("origin_country") or [])):
+        return True
+    return any(
+        (c.get("iso_3166_1") or "").strip().upper() == "CZ"
+        for c in (entry.get("production_countries") or [])
+        if isinstance(c, dict)
+    )
+
+
 # Countries whose alternative title we treat as the English name Sonarr/Radarr
 # use for a title that has no English name of its own (its `name` is the foreign
 # original). Sonarr matches releases by that title, so the release prefix must be it.
@@ -145,9 +156,10 @@ async def _resolve(client, entry: dict, kind: str) -> tuple[str, str, str, tuple
     orig/display logic never finds it.
     """
     disp, orig = _titles(entry, kind)
-    lang = _language(entry)
-    need_english = disp and not orig and lang and lang != "en"
-    need_czech = lang != "cs"  # Czech-origin: original/display already is the CZ name
+    orig_lang = _language(entry)
+    lang = "cs" if _is_czech_origin(entry) else orig_lang
+    need_english = disp and not orig and lang and lang != "en" and orig_lang != "en"
+    need_czech = orig_lang != "cs"  # Czech-origin: original/display already is the CZ name
     czech: list[str] = []
     if need_english or need_czech:
         alts = await _alt_titles(client, kind, entry.get("id"))

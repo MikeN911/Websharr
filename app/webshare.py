@@ -198,10 +198,11 @@ class WebshareClient:
                 return await self._post(path, data)
             raise
 
-    async def search(self, query: str, category: str = "video", limit: int = 60, offset: int = 0) -> list[SearchResult]:
+    async def search(self, query: str, category: str = "video", limit: int = 60, offset: int = 0,
+                     sort: str = "largest") -> list[SearchResult]:
         data = {
             "what": query,
-            "sort": "largest",
+            "sort": sort,
             "limit": str(limit),
             "offset": str(offset),
         }

@@ -904,6 +904,58 @@ def test_traitors_multi_country_separation(client, fake_webshare, monkeypatch):
     assert matches_query(ca_titles, "zrds03e01.rar") is False
 
 
+def test_czech_origin_release_without_cz_marker_gets_cz(client, fake_webshare, monkeypatch):
+    """A Czech-made movie/show whose file name has no CZ marker still defaults
+    to Czech language and gains the CZ marker in the feed title."""
+    from app import torznab
+    from app.settings import settings
+    monkeypatch.setattr(settings, "aliases", [])
+    monkeypatch.setattr(settings, "tmdb_token", "tok")
+
+    async def by_id(token, kind, tmdbid=None, imdbid=None, tvdbid=None):
+        return ("Pelíšky", "", "cs", (), 1999)
+
+    async def by_name(token, kind, q):
+        return None
+
+    monkeypatch.setattr(torznab, "tmdb_lookup_by_id", by_id)
+    monkeypatch.setattr(torznab, "tmdb_lookup", by_name)
+    fake_webshare.fuzzy = True
+    fake_webshare.results = [
+        SearchResult("p1", "Pelisky.1999.1080p.WEB-DL.mkv", 2_000_000_000),
+        SearchResult("p2", "Pelisky.1999.1080p.SK.mkv", 1_900_000_000),
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "movie", "apikey": "testkey", "q": "Pelíšky", "tmdbid": "111"})
+    root = ET.fromstring(resp.content)
+    by_guid = {}
+    for it in root.findall("channel/item"):
+        attrs = {a.get("name"): a.get("value") for a in it.findall(f"{NZNS}attr")}
+        by_guid[it.findtext("guid")] = (it.findtext("title"), attrs.get("language"))
+
+    assert by_guid["websharr-p1"][0].endswith(" CZ")
+    assert by_guid["websharr-p1"][1] == "Czech"
+    assert not by_guid["websharr-p2"][0].endswith(" CZ")
+    assert by_guid["websharr-p2"][1] == "Slovak"
+
+
+def test_empty_query_rss_sync_fetches_recent_uploads(client, fake_webshare):
+    """An empty RSS sync query fetches recent uploads via sort='recent' and
+    preserves recency order instead of sorting by file size."""
+    fake_webshare.results = [
+        SearchResult("r1", "Show.One.S01E05.1080p.CZ.mkv", 500_000_000),
+        SearchResult("r2", "Show.Two.S02E01.720p.mp4", 2_000_000_000),
+        SearchResult("r3", "Locked.S01E01.1080p.mkv", 1_000_000_000, password=True),
+    ]
+    resp = client.get("/torznab/api", params={
+        "t": "tvsearch", "apikey": "testkey", "cat": "5000,5040",
+    })
+    assert fake_webshare.last_sort == "recent"
+    root = ET.fromstring(resp.content)
+    titles = [it.findtext("title") for it in root.findall("channel/item")]
+    assert titles == ["Show.One.S01E05.1080p.CZ", "Show.Two.S02E01.720p"]
+
+
 
 
 
